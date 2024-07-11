@@ -1,0 +1,7 @@
+/data/
+/no_train_cond/
+/runs/
+/results/
+script.py
+__pycache__/
+
