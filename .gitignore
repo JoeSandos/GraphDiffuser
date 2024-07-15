@@ -5,3 +5,4 @@
 script.py
 __pycache__/
 
+.vscode/launch.json
