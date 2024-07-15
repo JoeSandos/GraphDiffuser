@@ -11,7 +11,8 @@ class TrainData(Dataset):
         assert len(U.shape)==3 and len(Y_bar.shape)==3 and len(Y_f.shape)==2 # N, T, m; N, T-1, p; N, p
         U_tensor = torch.tensor(U, dtype=torch.float32)
         U_zeros = torch.zeros(U_tensor.shape[0], 1, U_tensor.shape[2])
-        self.U = torch.cat([U_tensor, U_zeros], dim=1) # N, T+1, m
+        self.U = torch.cat([U_zeros, U_tensor], dim=1) # N, T+1, m
+        self.U = self.U.flip(1) # u is originally from T to 0
         Y_bar_tensor = torch.tensor(Y_bar, dtype=torch.float32)
         Y_f_tensor = torch.tensor(Y_f, dtype=torch.float32)
         Y_0_tensor = torch.zeros(Y_bar_tensor.shape[0], 1, Y_bar_tensor.shape[2])
@@ -52,7 +53,8 @@ class TrainData2(Dataset):
         assert len(U.shape)==3 and len(Y_bar.shape)==3 and len(Y_f.shape)==2 # N, T, m; N, T-1, p; N, p
         U_tensor = torch.tensor(U, dtype=torch.float32)
         U_zeros = torch.zeros(U_tensor.shape[0], 1, U_tensor.shape[2])
-        Us = torch.cat([U_tensor, U_zeros], dim=1) # N, T+1, m
+        Us = torch.cat([U_zeros, U_tensor], dim=1) # N, T+1, m
+        Us = Us.flip(1) # u is originally from T to 0
         U_cuts = [Us[:, i:i+horizon] for i in range(Us.shape[1]-horizon+1)] # length: T+1-horizon+1
         self.U = torch.cat(U_cuts, dim=0)  # (T+1-horizon+1)*N, horizon, m
         Y_bar_tensor = torch.tensor(Y_bar, dtype=torch.float32)
@@ -99,7 +101,8 @@ class TrainData_norm(Dataset):
         assert len(U.shape)==3 and len(Y_bar.shape)==3 and len(Y_f.shape)==2 # N, T, m; N, T-1, p; N, p
         U_tensor = torch.tensor(U, dtype=torch.float32)
         U_zeros = torch.zeros(U_tensor.shape[0], 1, U_tensor.shape[2])
-        self.U = torch.cat([U_tensor, U_zeros], dim=1) # N, T+1, m
+        self.U = torch.cat([U_zeros, U_tensor], dim=1)
+        self.U = self.U.flip(1) # u is originally from T to 0
         Y_bar_tensor = torch.tensor(Y_bar, dtype=torch.float32)
         Y_f_tensor = torch.tensor(Y_f, dtype=torch.float32)
         Y_0_tensor = torch.zeros(Y_bar_tensor.shape[0], 1, Y_bar_tensor.shape[2])
@@ -140,7 +143,8 @@ class TrainData_norm2(Dataset):
         assert len(U.shape)==3 and len(Y_bar.shape)==3 and len(Y_f.shape)==2 # N, T, m; N, T-1, p; N, p
         U_tensor = torch.tensor(U, dtype=torch.float32)
         U_zeros = torch.zeros(U_tensor.shape[0], 1, U_tensor.shape[2])
-        Us = torch.cat([U_tensor, U_zeros], dim=1) # N, T+1, m
+        Us = torch.cat([U_zeros, U_tensor], dim=1) # N, T+1, m
+        Us = Us.flip(1) # u is originally from T to 0
         U_cuts = [Us[:, i:i+horizon] for i in range(Us.shape[1]-horizon+1)] # length: T+1-horizon+1
         self.U = torch.cat(U_cuts, dim=0)  # (T+1-horizon+1)*N, horizon, m
         Y_bar_tensor = torch.tensor(Y_bar, dtype=torch.float32)
