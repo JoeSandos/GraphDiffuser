@@ -230,7 +230,82 @@ class ValueFunction(nn.Module):
         return out
 
 
-class ValueFunction_noparams(nn.Module):
+# class ValueFunction_noparams(nn.Module):
+#     def __init__(
+#         self,
+#         horizon,
+#         transition_dim,
+#         observation_dim,
+#         out_dim=1,
+#         fn_choose={'specific_end':1, 'any_end':1, 'energy':1},
+#         end_vector = None
+#     ):
+#         self.horizon = horizon
+#         self.transition_dim = transition_dim
+#         self.action_dim = transition_dim - observation_dim
+#         self.observation_dim = observation_dim
+#         self.out_dim = out_dim
+#         assert len(end_vector) == self.observation_dim
+#         self.end_vector = end_vector
+#         self.fn_choose = fn_choose
+#         super().__init__()
+        
+#     def forward(self, x, cond=None, time=None, *args):
+#         rewards = []
+#         reward_dict = {}
+#         for fn,weight in self.fn_choose.items():
+#             if fn == 'specific_end':
+#                 reward = self.any_end(x) * weight
+#             elif fn == 'any_end':
+#                 reward = self.any_end(x) * weight
+#             elif fn == 'energy':
+#                 reward = self.energy(x) * weight
+#             else:
+#                 raise NotImplementedError
+#             rewards.append(reward)
+#             reward_dict[fn] = reward
+#         # normalize rewards using l1 norm
+#         rewards = torch.stack(rewards, dim=-1)
+#         reward_by_sample = rewards.mean(dim=-1).detach().squeeze()
+#         rewards = rewards.mean()
+#         # the range of reward is [0,1]
+#         return rewards, reward_dict, reward_by_sample
+            
+        
+#     def any_end(self, x):
+#         assert x.shape[-1]==self.transition_dim
+#         # a focal weight is applied
+#         power = list(range(self.horizon))
+#         power = torch.tensor(power, dtype=torch.float32).to(x.device)
+#         # inverse
+#         power = power.flip(0)
+
+#         power = torch.exp(-power)
+#         power = power / power.sum()
+#         # apply focal weight
+#         l2_dist = torch.norm(x[:, :, self.action_dim:] - self.end_vector, dim=-1)
+#         reward = l2_dist * power.unsqueeze(0)
+#         reward = torch.exp(-reward.sum(dim=-1, keepdim=True))
+#         # the range of reward is [0,1], the larger the distance, the smaller the reward
+#         return reward
+    
+#     def specific_end(self, x):
+#         assert x.shape[-1]==self.transition_dim
+#         # only the final state is considered
+#         l2_dist = torch.norm(x[:, -1, self.action_dim:] - self.end_vector, dim=-1).unsqueeze(-1)
+#         reward = torch.exp(-l2_dist)
+#         return reward
+    
+        
+#     def energy(self, x):
+#         assert x.shape[-1]==self.transition_dim
+#         # the energy is calculated based on the action
+#         energy = torch.norm(x[:, :, :self.action_dim], dim=-1)
+#         reward = torch.exp(-energy.sum(dim=-1, keepdim=True)/self.horizon/self.action_dim)
+#         # the range of reward is [0,1], the larger the energy, the smaller the reward
+#         return reward
+    
+class LossFunction_noparams(nn.Module):
     def __init__(
         self,
         horizon,
@@ -251,56 +326,57 @@ class ValueFunction_noparams(nn.Module):
         super().__init__()
         
     def forward(self, x, cond=None, time=None, *args):
-        rewards = []
-        reward_dict = {}
+        losses = []
+        loss_dict = {}
         for fn,weight in self.fn_choose.items():
             if fn == 'specific_end':
-                reward = self.any_end(x) * weight
+                loss = self.specific_end(x) * weight
             elif fn == 'any_end':
-                reward = self.any_end(x) * weight
+                loss = self.any_end(x) * weight
             elif fn == 'energy':
-                reward = self.energy(x) * weight
+                loss = self.energy(x) * weight
             else:
                 raise NotImplementedError
-            rewards.append(reward)
-            reward_dict[fn] = reward
+            losses.append(loss)
+            loss_dict[fn] = loss
         # normalize rewards using l1 norm
-        rewards = torch.stack(rewards, dim=-1)
-        reward_by_sample = rewards.mean(dim=-1).detach().squeeze()
-        rewards = rewards.mean()
+        losses = torch.stack(losses, dim=-1)
+        loss_by_sample = losses.mean(dim=-1).detach().squeeze()
+        losses = losses.mean()
         # the range of reward is [0,1]
-        return rewards, reward_dict, reward_by_sample
+        return losses, loss_dict, loss_by_sample
             
         
     def any_end(self, x):
         assert x.shape[-1]==self.transition_dim
         # a focal weight is applied
-        power = list(range(self.horizon))
+        power = list(range(self.horizon)) # power = [0,1,2,...,horizon-1]
         power = torch.tensor(power, dtype=torch.float32).to(x.device)
         # inverse
-        power = power.flip(0)
+        power = power.flip(0) # power = [horizon-1,horizon-2,...,0]
 
-        power = torch.exp(-power)
-        power = power / power.sum()
+        power = torch.exp(-power) # power = [exp(-horizon+1),exp(-horizon+2),...,exp(-1),exp(0)]
+        power = power / power.sum() # power = [exp(-horizon+1)/sum,exp(-horizon+2)/sum,...,exp(-1)/sum,exp(0)/sum]
         # apply focal weight
         l2_dist = torch.norm(x[:, :, self.action_dim:] - self.end_vector, dim=-1)
-        reward = l2_dist * power.unsqueeze(0)
-        reward = torch.exp(-reward.sum(dim=-1, keepdim=True))
-        # the range of reward is [0,1], the larger the distance, the smaller the reward
-        return reward
+        loss = l2_dist * power.unsqueeze(0)
+        loss = loss.sum(dim=-1, keepdim=True)
+        # the larger the distance, the larger the loss
+        return loss
     
     def specific_end(self, x):
         assert x.shape[-1]==self.transition_dim
         # only the final state is considered
         l2_dist = torch.norm(x[:, -1, self.action_dim:] - self.end_vector, dim=-1).unsqueeze(-1)
-        reward = torch.exp(-l2_dist)
-        return reward
+        # reward = torch.exp(-l2_dist)
+        return l2_dist
     
         
     def energy(self, x):
         assert x.shape[-1]==self.transition_dim
         # the energy is calculated based on the action
-        energy = torch.norm(x[:, :, :self.action_dim], dim=-1)
-        reward = torch.exp(-energy.sum(dim=-1, keepdim=True)/self.horizon/self.action_dim)
+        energy = (x[:, :, :self.action_dim]**2).sum(dim=-1)
+        energy = energy.sum(dim=-1, keepdim=True)
+        # reward = torch.exp(-energy.sum(dim=-1, keepdim=True)/self.horizon/self.action_dim)
         # the range of reward is [0,1], the larger the energy, the smaller the reward
-        return reward
+        return energy

@@ -9,7 +9,7 @@ from .arrays import batch_to_device, to_np, to_device, apply_dict
 from torch.nn.functional import mse_loss, mse_loss
 from torch.utils.tensorboard import SummaryWriter
 from utils.distance import MMDLoss
-from model.temporal import ValueFunction_noparams
+from model.temporal import LossFunction_noparams
 class Timer:
 
 	def __init__(self):
@@ -267,6 +267,7 @@ class Trainer(object):
         mses = torch.zeros(self.env.max_T)
         dis_to_end = torch.zeros(self.env.max_T)
         dis_to_end_from_act = torch.zeros(self.env.max_T)
+        # pdb.set_trace()
         
         traj_tensors = []
         for epoch in range(sample_num):
@@ -287,15 +288,17 @@ class Trainer(object):
                     
                 # planning or one-shot
                 if not resample:
-                    guide = ValueFunction_noparams(horizon=self.env.max_T+1, transition_dim=self.ema_model.transition_dim, observation_dim=self.ema_model.observation_dim, fn_choose=fn_choose, end_vector=y_f.squeeze())
+                    guide = LossFunction_noparams(horizon=self.env.max_T+1, transition_dim=self.ema_model.transition_dim, observation_dim=self.ema_model.observation_dim, fn_choose=fn_choose, end_vector=y_f.squeeze())
                     self.ema_model.set_guide_fn(guide)
                     if not no_cond:
-                        trajectories, *_ = self.ema_model(batch_size=4, cond={0: y_0, self.env.max_T: y_f}, horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
+                        trajectories, _, _, guidances = self.ema_model(batch_size=4, cond={0: y_0, self.env.max_T: y_f}, horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
                         trajectories = trajectories[0:1]
                     else:
-                        trajectories, *_ = self.ema_model(cond = {}, horizon=self.env.max_T+1)
-                        y_0 = trajectories[0, 0, self.ema_model.action_dim:]
-                        y_f = trajectories[0, -1, self.ema_model.action_dim:]
+                        # better to use no_cond when fn_choose uses specific_end
+                        trajectories, _, _, guidances = self.ema_model(batch_size=4, cond={0: y_0}, horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
+                        trajectories = trajectories[0:1]
+
+
                     trajectories = trajectories.cpu()
                     
                     actions = trajectories[0, :-1, :self.ema_model.action_dim] # T, m
@@ -303,53 +306,54 @@ class Trainer(object):
                     observations = trajectories[0, 1:, self.ema_model.action_dim:] #  T, p
                
                 else:
-                    cond = {0: y_0, self.ema_model.horizon-1: y_f}
-                    actions = []
-                    observations = []
-                    ternimal = False
-                    for i in range(self.env.max_T):
-                    # i=0
-                    # while not ternimal:
-                        if i == 0:
-                            self.env.reset()
-                            # pass
-                        else:
-                            action = self.dataset.normalizer['U'].unnormalize(action.unsqueeze(0).unsqueeze(0)).squeeze(0).squeeze(0)
-                            obs, _, ternimal = self.env.step(action, target=y_f.squeeze().cpu())
-                            # print(obs.shape)
-                            # observations.append(obs)
-                            obs = self.dataset.normalizer['Y'].normalize(obs.unsqueeze(0).unsqueeze(0))
-                            cond[0] = obs.to(self.device)
-                        # method 1
-                        if i>self.env.max_T-self.ema_model.horizon+1:
-                            shift = self.env.max_T-i
-                            cond.pop(shift+1)
+                    raise NotImplementedError
+                    # cond = {0: y_0, self.ema_model.horizon-1: y_f}
+                    # actions = []
+                    # observations = []
+                    # ternimal = False
+                    # for i in range(self.env.max_T):
+                    # # i=0
+                    # # while not ternimal:
+                    #     if i == 0:
+                    #         self.env.reset()
+                    #         # pass
+                    #     else:
+                    #         action = self.dataset.normalizer['U'].unnormalize(action.unsqueeze(0).unsqueeze(0)).squeeze(0).squeeze(0)
+                    #         obs, _, ternimal = self.env.step(action, target=y_f.squeeze().cpu())
+                    #         # print(obs.shape)
+                    #         # observations.append(obs)
+                    #         obs = self.dataset.normalizer['Y'].normalize(obs.unsqueeze(0).unsqueeze(0))
+                    #         cond[0] = obs.to(self.device)
+                    #     # method 1
+                    #     if i>self.env.max_T-self.ema_model.horizon+1:
+                    #         shift = self.env.max_T-i
+                    #         cond.pop(shift+1)
                             
-                            cond[shift] = y_f
-                        # print(cond.keys())
+                    #         cond[shift] = y_f
+                    #     # print(cond.keys())
                         
-                        # method 2
-                        # none
+                    #     # method 2
+                    #     # none
                         
-                        if not no_cond:
-                            trajectories, *_ = self.ema_model(cond=cond, horizon=self.ema_model.horizon)
-                        else:
-                            raise NotImplementedError
-                        trajectories = trajectories.cpu()
-                        action = trajectories[0, 0, :self.ema_model.action_dim]
-                        obs = trajectories[0, 1, self.ema_model.action_dim:]
-                        actions.append(action)
-                        observations.append(obs)
-                        # i+=1
-                        # if i>100:
-                        #     print("Too many steps")
-                        #     break
-                    # obs, *_ = self.env.step(action)
-                    # observations.append(obs)
-                    actions = torch.stack(actions).cpu() # T, m
-                    observations = torch.stack(observations).cpu() # T, p
-                    # actions = actions[:self.env.max_T]
-                    # observations = observations[:self.env.max_T]
+                    #     if not no_cond:
+                    #         trajectories, *_ = self.ema_model(cond=cond, horizon=self.ema_model.horizon)
+                    #     else:
+                    #         raise NotImplementedError
+                    #     trajectories = trajectories.cpu()
+                    #     action = trajectories[0, 0, :self.ema_model.action_dim]
+                    #     obs = trajectories[0, 1, self.ema_model.action_dim:]
+                    #     actions.append(action)
+                    #     observations.append(obs)
+                    #     # i+=1
+                    #     # if i>100:
+                    #     #     print("Too many steps")
+                    #     #     break
+                    # # obs, *_ = self.env.step(action)
+                    # # observations.append(obs)
+                    # actions = torch.stack(actions).cpu() # T, m
+                    # observations = torch.stack(observations).cpu() # T, p
+                    # # actions = actions[:self.env.max_T]
+                    # # observations = observations[:self.env.max_T]
                 if not resample:
                     traj_tensors.append(trajectories.squeeze(0))
                 else:
@@ -363,7 +367,11 @@ class Trainer(object):
                     observations = observations.squeeze(0)
                     actions = actions.squeeze(0)
                 
-                
+                for k,v in guidances.items():
+                    if epoch<4:
+                        # pdb.set_trace()
+                        self.writer.add_scalar(f'guidance/{k}_{epoch}', np.nanmean(v.cpu()), self.step)
+                        
                     
                 
             # evaluate the correspondense of actions and observations

@@ -13,7 +13,7 @@ from .helpers import (
     Losses,
 )
 
-Sample = namedtuple('Sample', 'trajectories values chains')
+Sample = namedtuple('Sample', 'trajectories values chains guidances')
 
 
 @torch.no_grad()
@@ -65,8 +65,8 @@ def n_step_guided_p_sample(
 
     return model_mean + model_std * noise, y
 
-def sort_by_values(x, values): #COMM: sort x by values, biggest value first
-    inds = torch.argsort(values, descending=True)
+def sort_by_values(x, values, decending = True): #COMM: sort x by values, biggest value first
+    inds = torch.argsort(values, descending=decending)
     x = x[inds]
     values = values[inds]
     return x, values
@@ -212,7 +212,7 @@ class GaussianDiffusion(nn.Module):
 
         x, values = sort_by_values(x, values)
         if return_chain: chain = torch.stack(chain, dim=1)
-        return Sample(x, values, chain)
+        return Sample(x, values, chain, None)
 
     @torch.no_grad()
     def conditional_sample(self, cond, batch_size, horizon=None, **sample_kwargs):
@@ -413,7 +413,7 @@ class GaussianInvDynDiffusion(nn.Module):
         device = self.betas.device
 
         batch_size = shape[0]
-        x = 0.5*torch.randn(shape, device=device)
+        x = torch.randn(shape, device=device)
         x = apply_conditioning(x, cond, 0)
 
         if return_diffusion: diffusion = [x]
@@ -627,6 +627,8 @@ class GaussianDiffusionClassifierGuided(nn.Module):
         t_inp = t
         x_model_in = x
         x_recon = self.predict_start_from_noise(x_tmp, t=t, noise=self.model(x_model_in, cond, t_inp))
+        # if t.max() == 63:
+        #     pdb.set_trace()
 
         if self.clip_denoised:
             x_recon.clamp_(-1., 1.)
@@ -652,12 +654,12 @@ class GaussianDiffusionClassifierGuided(nn.Module):
         with torch.enable_grad():
 
             # compute losses and gradient
-            tol_reward, reward_dict, reward_by_sample = self.current_guidance(x)
+            tol_loss, loss_dict, loss_by_sample = self.current_guidance(x)
             # print(tot_loss)
-            tol_reward.backward()
+            tol_loss.backward()
             guide_grad = x.grad if return_grad_of is None else return_grad_of.grad
 
-            return guide_grad, reward_dict, reward_by_sample
+            return guide_grad, loss_dict, loss_by_sample
     
     @torch.no_grad()
     def p_sample(self, x, cond, t, returns=None, apply_guidance=True, guide_clean=False, eval_final_guide_loss=True):
@@ -702,7 +704,7 @@ class GaussianDiffusionClassifierGuided(nn.Module):
 
         if guide_clean:
             # perturb clean trajectory
-            guided_clean = q_posterior_in[0] + guide_grad*self.scale
+            guided_clean = q_posterior_in[0] - guide_grad*self.scale
             # use the same noisy input again
             guided_x_t = q_posterior_in[1]
             # re-compute next step distribution with guided clean & noisy trajectories
@@ -712,7 +714,7 @@ class GaussianDiffusionClassifierGuided(nn.Module):
             # NOTE: variance is not dependent on x_start, so it won't change. Therefore, fine to use same noise.
             x_out = model_mean + noise
         else:
-            x_out = model_mean + guide_grad*self.scale + noise
+            x_out = model_mean - guide_grad*self.scale + noise
         if eval_final_guide_loss:
             # eval guidance loss one last time for filtering if desired
             #       (even if not applied during sampling)
@@ -725,7 +727,7 @@ class GaussianDiffusionClassifierGuided(nn.Module):
         device = self.betas.device
 
         batch_size = shape[0]
-        x = 0.5*torch.randn(shape, device=device)
+        x = torch.randn(shape, device=device)
         x = apply_conditioning(x, cond, self.action_dim)
 
         diffusion = [x]
@@ -746,12 +748,12 @@ class GaussianDiffusionClassifierGuided(nn.Module):
             for k,v in guide_rewards.items():
                 print('%s: %.012f' % (k, np.nanmean(v.cpu())))
         
-        x, guide_sample = sort_by_values(x, guide_sample)
+        x, guide_sample = sort_by_values(x, guide_sample, decending=False)
 
         if return_diffusion:
             diffusion = torch.stack(diffusion, dim=1)
         
-        return Sample(x, guide_sample, diffusion)
+        return Sample(x, guide_sample, diffusion, guide_rewards)
         
     # def p_sample_loop(self, shape, cond, verbose=True, return_chain=False, sample_fn=default_sample_fn, **sample_kwargs):
     #     device = self.betas.device
@@ -806,6 +808,9 @@ class GaussianDiffusionClassifierGuided(nn.Module):
         x_noisy = apply_conditioning(x_noisy, cond, self.action_dim)
 
         x_recon = self.model(x_noisy, cond, t)
+        # if t.max()==40:
+        #     pdb.set_trace()
+
         if not self.predict_epsilon:
             x_recon = apply_conditioning(x_recon, cond, self.action_dim)
 
