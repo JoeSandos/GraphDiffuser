@@ -1025,3 +1025,54 @@ class Trainer(object):
         self.model.train()
         self.ema_model.train()
         return mse_total, mse_final_total, mse_final_target_total, mse_u_total, mse_u_target_total
+    
+    def sample_tensors(self, args, test_data=None, sample_num=10, fn_choose={'energy':1}):
+        self.model.eval()
+        self.ema_model.eval()
+        U_s = []
+        Y_s = []
+        for i in range(sample_num):
+            if test_data:
+                random_int = np.random.randint(0, len(test_data))
+            with torch.no_grad():
+                if test_data==None:
+                    y_f = np.random.randn(1, 1, self.env.num_observation) * self.sigma
+                    y_0 = np.zeros((1, 1, self.env.num_observation))
+                    y_0 = self.dataset.normalizer['Y'].normalize(y_0)
+                    # y_f = self.dataset.normalizer['Y'].normalize(y_f)
+                    y_0 = torch.tensor(y_0).to(self.device)
+                    y_f = torch.tensor(y_f).to(self.device)
+                else:
+                    y_f = test_data[random_int][0][-1, -self.env.num_observation:].unsqueeze(0).unsqueeze(0).to(self.device) # 1, 1, p
+                    y_0 = test_data[random_int][0][0, -self.env.num_observation:].unsqueeze(0).unsqueeze(0).to(self.device) # 1, 1, p
+                    
+            
+                # planning or one-shot
+                
+                guide = LossFunction_noparams(horizon=self.env.max_T+1, transition_dim=self.ema_model.transition_dim, observation_dim=self.ema_model.observation_dim, fn_choose=fn_choose, end_vector=y_f.squeeze())
+                self.ema_model.set_guide_fn(guide)
+                trajectories, _, _, guidances = self.ema_model(batch_size=4, cond={0: y_0, self.env.max_T: y_f}, horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
+                trajectories = trajectories[0:1]
+                
+
+
+                trajectories = trajectories.cpu()
+                
+                actions = trajectories[0, :-1, :self.ema_model.action_dim] # T, m
+                # action = actions[0, 0]
+                observations = trajectories[0, 1:, self.ema_model.action_dim:] #  T, p
+                actions = self.dataset.normalizer['U'].unnormalize(actions)
+                observations = self.dataset.normalizer['Y'].unnormalize(observations)
+                y_f = self.dataset.normalizer['Y'].unnormalize(y_f.cpu())
+                
+                obs_from_act = self.env.from_actions_to_obs_direct(actions)
+                if torch.norm(obs_from_act[-1].squeeze()-y_f.squeeze()) >0.1:
+                    continue
+
+                U_s.append(actions.flip(0))
+                Y_s.append(observations)
+        print(len(U_s))        
+        U_s = torch.stack(U_s)
+        Y_s = torch.stack(Y_s)
+        
+        return U_s, Y_s[:,:-1], Y_s[:,-1]

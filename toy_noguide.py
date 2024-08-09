@@ -48,7 +48,7 @@ parser.add_argument('--train_savepath', type=str, default='./results/toy_noguide
 parser.add_argument('--n_train_steps', type=int, default=int(1e4))
 parser.add_argument('--n_steps_per_epoch', type=int, default=int(2e3))
 parser.add_argument('--sw_dir', type=str, default='./runs/')
-parser.add_argument('--sw_name', type=str, default='debug')
+parser.add_argument('--sw_name', type=str, default='debug1')
 parser.add_argument('--resample', type=int, default=0)
 parser.add_argument('--horizon', type=int, default=8)
 parser.add_argument('--sample_use_test', type=int, default=1)
@@ -62,6 +62,8 @@ parser.add_argument('--sigma', type=float, default=1)
 parser.add_argument('--apply_guide', type=int, default=1)
 parser.add_argument('--guide_clean', type=int, default=1)
 parser.add_argument('--scale', type=float, default=1)
+parser.add_argument('--loops', type=int, default=0)
+parser.add_argument('--concat', type=int, default=1)
 
 
 # 解析参数
@@ -163,3 +165,58 @@ if args.sample_use_test:
     trainer.train(n_train_steps=args.n_train_steps, test_data=test_data, no_cond=args.no_cond)
 else:
     trainer.train(n_train_steps=args.n_train_steps, no_cond=args.no_cond)
+
+for i in range(args.loops):
+
+    samples_U, samples_Y_bar, samples_Y_f = trainer.sample_tensors(args=args, sample_num=50, test_data=test_data)
+    if args.concat:
+    # concat half of the samples with the original data
+        length = samples_U.shape[0]
+        # length = length//2
+        assert length > 0
+        length_original = U_3d.shape[0]
+        
+        samples_U = np.concatenate([U_3d[:num_train//2], samples_U[:length]], axis=0)
+        samples_Y_bar = np.concatenate([Y_bar_3d[:num_train//2], samples_Y_bar[:length]], axis=0)
+        samples_Y_f = np.concatenate([Y_f_3d[:num_train//2], samples_Y_f[:length]], axis=0)
+
+    model = trainer.model
+
+    if args.resample and args.normalized:
+        train_data = TrainData_norm2(samples_U, samples_Y_bar, samples_Y_f, horizon=args.horizon)
+        # val_data = TrainData_norm2(U_3d[num_train:num_train+num_val], Y_bar_3d[num_train:num_train+num_val], Y_f_3d[num_train:num_train+num_val], horizon=args.horizon)
+        
+    elif args.resample and (not args.normalized):
+        train_data = TrainData2(samples_U, samples_Y_bar, samples_Y_f, horizon=args.horizon)
+        # val_data = TrainData2(U_3d[num_train:num_train+num_val], Y_bar_3d[num_train:num_train+num_val], Y_f_3d[num_train:num_train+num_val], horizon=args.horizon)
+        
+    elif args.normalized:
+        train_data = TrainData_norm(samples_U, samples_Y_bar, samples_Y_f)
+        # val_data = TrainData_norm(U_3d[num_train:num_train+num_val], Y_bar_3d[num_train:num_train+num_val], Y_f_3d[num_train:num_train+num_val])
+        
+    else:
+        train_data = TrainData(samples_U, samples_Y_bar, samples_Y_f)
+        # val_data = TrainData(U_3d[num_train:num_train+num_val], Y_bar_3d[num_train:num_train+num_val], Y_f_3d[num_train:num_train+num_val])
+
+
+
+    trainer = Trainer(model,
+                        train_data,
+                        env=env,
+                        device=device,
+                        train_batch_size=args.batch_size,
+                        train_lr=args.lr,
+                        results_folder=args.train_savepath,
+                        summary_writer_name=args.sw_dir + args.sw_name + f'_finetune_{i}',
+                        resample=args.resample,
+                        use_invdyn=args.use_invdyn,
+                        normalized=args.normalized,
+                        valid_data=val_data,
+                        sigma=args.sigma,
+                        apply_guidance=args.apply_guide,
+                        guide_clean=args.guide_clean)
+
+    if args.sample_use_test:
+        trainer.train(n_train_steps=args.n_train_steps, test_data=test_data, no_cond=args.no_cond)
+    else:
+        trainer.train(n_train_steps=args.n_train_steps, no_cond=args.no_cond)
