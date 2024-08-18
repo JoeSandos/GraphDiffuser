@@ -122,6 +122,18 @@ class Trainer(object):
         else:
             self.writer = SummaryWriter()
 
+    def renew_dataset(self, dataset):
+        self.dataset = dataset
+        self.dataloader = cycle(torch.utils.data.DataLoader(
+            self.dataset, batch_size=self.batch_size, num_workers=1, shuffle=True, pin_memory=True
+        ))
+    
+    def renew_optimizer(self, train_lr):
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=train_lr)
+        
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.1, patience=10, \
+		verbose=False, threshold=1e-4, threshold_mode='rel', cooldown=0, min_lr=0, eps=1e-6)
+
     def reset_parameters(self):
         self.ema_model.load_state_dict(self.model.state_dict())
 

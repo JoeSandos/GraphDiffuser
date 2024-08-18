@@ -743,10 +743,10 @@ class GaussianDiffusionClassifierGuided(nn.Module):
     
 
             if return_diffusion: diffusion.append(x)
-        if guide_rewards is not None:
-            print('===== GUIDANCE LOSSES ======')
-            for k,v in guide_rewards.items():
-                print('%s: %.012f' % (k, np.nanmean(v.cpu())))
+        # if guide_rewards is not None:
+        #     print('===== GUIDANCE LOSSES ======')
+        #     for k,v in guide_rewards.items():
+        #         print('%s: %.012f' % (k, np.nanmean(v.cpu())))
         
         x, guide_sample = sort_by_values(x, guide_sample, decending=False)
 
