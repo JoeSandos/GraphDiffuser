@@ -9,7 +9,10 @@ from .arrays import batch_to_device, to_np, to_device, apply_dict
 from torch.nn.functional import mse_loss, mse_loss
 from torch.utils.tensorboard import SummaryWriter
 from utils.distance import MMDLoss
-from model.temporal import ValueFunction_noparams
+from model.temporal import LossFunction_noparams
+
+test_data_global = []
+
 class Timer:
 
 	def __init__(self):
@@ -65,7 +68,7 @@ class Trainer(object):
         label_freq=100000,
         results_folder='./results',
         n_reference=8,
-        n_samples=8,
+        n_samples=16,
         resample = False,
         use_invdyn = False,
         normalized = False,
@@ -121,6 +124,18 @@ class Trainer(object):
             self.writer = SummaryWriter(summary_writer_name)
         else:
             self.writer = SummaryWriter()
+
+    def renew_dataset(self, dataset):
+        self.dataset = dataset
+        self.dataloader = cycle(torch.utils.data.DataLoader(
+            self.dataset, batch_size=self.batch_size, num_workers=1, shuffle=True, pin_memory=True
+        ))
+    
+    def renew_optimizer(self, train_lr):
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=train_lr)
+        
+        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.1, patience=10, \
+		verbose=False, threshold=1e-4, threshold_mode='rel', cooldown=0, min_lr=0, eps=1e-6)
 
     def reset_parameters(self):
         self.ema_model.load_state_dict(self.model.state_dict())
@@ -246,6 +261,7 @@ class Trainer(object):
     #     return cond
     
     def sample_guided(self, sample_num=8, resample=False, test_data=None, no_cond=False, draw_traj=False, fn_choose={'energy':1}):
+        global test_data_global
         self.model.eval()
         self.ema_model.eval()
         
@@ -267,6 +283,7 @@ class Trainer(object):
         mses = torch.zeros(self.env.max_T)
         dis_to_end = torch.zeros(self.env.max_T)
         dis_to_end_from_act = torch.zeros(self.env.max_T)
+        # pdb.set_trace()
         
         traj_tensors = []
         for epoch in range(sample_num):
@@ -275,10 +292,13 @@ class Trainer(object):
             with torch.no_grad():
                 # inpaint cond from test_data or random
                 if test_data==None:
+                    
                     y_f = np.random.randn(1, 1, self.env.num_observation) * self.sigma
+                    
+                    
                     y_0 = np.zeros((1, 1, self.env.num_observation))
                     y_0 = self.dataset.normalizer['Y'].normalize(y_0)
-                    # y_f = self.dataset.normalizer['Y'].normalize(y_f)
+                    y_f = self.dataset.normalizer['Y'].normalize(y_f)
                     y_0 = torch.tensor(y_0).to(self.device)
                     y_f = torch.tensor(y_f).to(self.device)
                 else:
@@ -287,15 +307,17 @@ class Trainer(object):
                     
                 # planning or one-shot
                 if not resample:
-                    guide = ValueFunction_noparams(horizon=self.env.max_T+1, transition_dim=self.ema_model.transition_dim, observation_dim=self.ema_model.observation_dim, fn_choose=fn_choose, end_vector=y_f.squeeze())
+                    guide = LossFunction_noparams(horizon=self.env.max_T+1, transition_dim=self.ema_model.transition_dim, observation_dim=self.ema_model.observation_dim, fn_choose=fn_choose, end_vector=y_f.squeeze())
                     self.ema_model.set_guide_fn(guide)
                     if not no_cond:
-                        trajectories, *_ = self.ema_model(batch_size=4, cond={0: y_0, self.env.max_T: y_f}, horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
+                        trajectories, _, _, guidances = self.ema_model(batch_size=4, cond={0: y_0, self.env.max_T: y_f}, horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
                         trajectories = trajectories[0:1]
                     else:
-                        trajectories, *_ = self.ema_model(cond = {}, horizon=self.env.max_T+1)
-                        y_0 = trajectories[0, 0, self.ema_model.action_dim:]
-                        y_f = trajectories[0, -1, self.ema_model.action_dim:]
+                        # better to use no_cond when fn_choose uses specific_end
+                        trajectories, _, _, guidances = self.ema_model(batch_size=4, cond={0: y_0}, horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
+                        trajectories = trajectories[0:1]
+
+
                     trajectories = trajectories.cpu()
                     
                     actions = trajectories[0, :-1, :self.ema_model.action_dim] # T, m
@@ -303,53 +325,54 @@ class Trainer(object):
                     observations = trajectories[0, 1:, self.ema_model.action_dim:] #  T, p
                
                 else:
-                    cond = {0: y_0, self.ema_model.horizon-1: y_f}
-                    actions = []
-                    observations = []
-                    ternimal = False
-                    for i in range(self.env.max_T):
-                    # i=0
-                    # while not ternimal:
-                        if i == 0:
-                            self.env.reset()
-                            # pass
-                        else:
-                            action = self.dataset.normalizer['U'].unnormalize(action.unsqueeze(0).unsqueeze(0)).squeeze(0).squeeze(0)
-                            obs, _, ternimal = self.env.step(action, target=y_f.squeeze().cpu())
-                            # print(obs.shape)
-                            # observations.append(obs)
-                            obs = self.dataset.normalizer['Y'].normalize(obs.unsqueeze(0).unsqueeze(0))
-                            cond[0] = obs.to(self.device)
-                        # method 1
-                        if i>self.env.max_T-self.ema_model.horizon+1:
-                            shift = self.env.max_T-i
-                            cond.pop(shift+1)
+                    raise NotImplementedError
+                    # cond = {0: y_0, self.ema_model.horizon-1: y_f}
+                    # actions = []
+                    # observations = []
+                    # ternimal = False
+                    # for i in range(self.env.max_T):
+                    # # i=0
+                    # # while not ternimal:
+                    #     if i == 0:
+                    #         self.env.reset()
+                    #         # pass
+                    #     else:
+                    #         action = self.dataset.normalizer['U'].unnormalize(action.unsqueeze(0).unsqueeze(0)).squeeze(0).squeeze(0)
+                    #         obs, _, ternimal = self.env.step(action, target=y_f.squeeze().cpu())
+                    #         # print(obs.shape)
+                    #         # observations.append(obs)
+                    #         obs = self.dataset.normalizer['Y'].normalize(obs.unsqueeze(0).unsqueeze(0))
+                    #         cond[0] = obs.to(self.device)
+                    #     # method 1
+                    #     if i>self.env.max_T-self.ema_model.horizon+1:
+                    #         shift = self.env.max_T-i
+                    #         cond.pop(shift+1)
                             
-                            cond[shift] = y_f
-                        # print(cond.keys())
+                    #         cond[shift] = y_f
+                    #     # print(cond.keys())
                         
-                        # method 2
-                        # none
+                    #     # method 2
+                    #     # none
                         
-                        if not no_cond:
-                            trajectories, *_ = self.ema_model(cond=cond, horizon=self.ema_model.horizon)
-                        else:
-                            raise NotImplementedError
-                        trajectories = trajectories.cpu()
-                        action = trajectories[0, 0, :self.ema_model.action_dim]
-                        obs = trajectories[0, 1, self.ema_model.action_dim:]
-                        actions.append(action)
-                        observations.append(obs)
-                        # i+=1
-                        # if i>100:
-                        #     print("Too many steps")
-                        #     break
-                    # obs, *_ = self.env.step(action)
-                    # observations.append(obs)
-                    actions = torch.stack(actions).cpu() # T, m
-                    observations = torch.stack(observations).cpu() # T, p
-                    # actions = actions[:self.env.max_T]
-                    # observations = observations[:self.env.max_T]
+                    #     if not no_cond:
+                    #         trajectories, *_ = self.ema_model(cond=cond, horizon=self.ema_model.horizon)
+                    #     else:
+                    #         raise NotImplementedError
+                    #     trajectories = trajectories.cpu()
+                    #     action = trajectories[0, 0, :self.ema_model.action_dim]
+                    #     obs = trajectories[0, 1, self.ema_model.action_dim:]
+                    #     actions.append(action)
+                    #     observations.append(obs)
+                    #     # i+=1
+                    #     # if i>100:
+                    #     #     print("Too many steps")
+                    #     #     break
+                    # # obs, *_ = self.env.step(action)
+                    # # observations.append(obs)
+                    # actions = torch.stack(actions).cpu() # T, m
+                    # observations = torch.stack(observations).cpu() # T, p
+                    # # actions = actions[:self.env.max_T]
+                    # # observations = observations[:self.env.max_T]
                 if not resample:
                     traj_tensors.append(trajectories.squeeze(0))
                 else:
@@ -363,7 +386,11 @@ class Trainer(object):
                     observations = observations.squeeze(0)
                     actions = actions.squeeze(0)
                 
-                
+                for k,v in guidances.items():
+                    if epoch<4:
+                        # pdb.set_trace()
+                        self.writer.add_scalar(f'guidance/{k}_{epoch}', np.nanmean(v.cpu()), self.step)
+                        
                     
                 
             # evaluate the correspondense of actions and observations
@@ -401,10 +428,10 @@ class Trainer(object):
                 mse_u_target_data_appr = mse_loss(y_f_hat_data_appr, y_f.cpu().squeeze()).item()
                 
                 # calculate energy of controls:
-                energy_u = torch.sum(u_min**2)
-                energy_u_data = torch.sum(u_min_data**2)
-                energy_u_data_appr = torch.sum(u_min_data_appr**2)
-                energy_actions = torch.sum(actions**2)
+                energy_u = torch.norm(u_min, p=2)
+                energy_u_data = torch.norm(u_min_data, p=2)
+                energy_u_data_appr = torch.norm(u_min_data_appr, p=2)
+                energy_actions = torch.norm(actions, p=2)
                 
                 
                 mse_total += mse
@@ -1017,3 +1044,54 @@ class Trainer(object):
         self.model.train()
         self.ema_model.train()
         return mse_total, mse_final_total, mse_final_target_total, mse_u_total, mse_u_target_total
+    
+    def sample_tensors(self, args, test_data=None, sample_num=10, fn_choose={'energy':1}):
+        self.model.eval()
+        self.ema_model.eval()
+        U_s = []
+        Y_s = []
+        for i in range(sample_num):
+            if test_data:
+                random_int = np.random.randint(0, len(test_data))
+            with torch.no_grad():
+                if test_data==None:
+                    y_f = np.random.randn(1, 1, self.env.num_observation) * self.sigma
+                    y_0 = np.zeros((1, 1, self.env.num_observation))
+                    y_0 = self.dataset.normalizer['Y'].normalize(y_0)
+                    y_f = self.dataset.normalizer['Y'].normalize(y_f)
+                    y_0 = torch.tensor(y_0).to(self.device)
+                    y_f = torch.tensor(y_f).to(self.device)
+                else:
+                    y_f = test_data[random_int][0][-1, -self.env.num_observation:].unsqueeze(0).unsqueeze(0).to(self.device) # 1, 1, p
+                    y_0 = test_data[random_int][0][0, -self.env.num_observation:].unsqueeze(0).unsqueeze(0).to(self.device) # 1, 1, p
+                    
+            
+                # planning or one-shot
+                
+                guide = LossFunction_noparams(horizon=self.env.max_T+1, transition_dim=self.ema_model.transition_dim, observation_dim=self.ema_model.observation_dim, fn_choose=fn_choose, end_vector=y_f.squeeze())
+                self.ema_model.set_guide_fn(guide)
+                trajectories, _, _, guidances = self.ema_model(batch_size=4, cond={0: y_0, self.env.max_T: y_f}, horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
+                trajectories = trajectories[0:1]
+                
+
+
+                trajectories = trajectories.cpu()
+                
+                actions = trajectories[0, :-1, :self.ema_model.action_dim] # T, m
+                # action = actions[0, 0]
+                observations = trajectories[0, 1:, self.ema_model.action_dim:] #  T, p
+                actions = self.dataset.normalizer['U'].unnormalize(actions)
+                observations = self.dataset.normalizer['Y'].unnormalize(observations)
+                y_f = self.dataset.normalizer['Y'].unnormalize(y_f.cpu())
+                
+                obs_from_act = self.env.from_actions_to_obs_direct(actions)
+                # if torch.norm(obs_from_act[-1].squeeze()-y_f.squeeze()) >0.1:
+                #     continue
+
+                U_s.append(actions.flip(0))
+                Y_s.append(observations)
+        print(len(U_s))        
+        U_s = torch.stack(U_s)
+        Y_s = torch.stack(Y_s)
+        
+        return U_s, Y_s[:,:-1], Y_s[:,-1]

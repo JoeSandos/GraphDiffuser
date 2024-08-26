@@ -45,16 +45,17 @@ parser.add_argument('--valid_ratio', type=float, default=0.1)
 parser.add_argument('--batch_size', type=int, default=16)
 parser.add_argument('--lr', type=float, default=1e-3)
 parser.add_argument('--train_savepath', type=str, default='./results/toy_noguide')
-parser.add_argument('--n_train_steps', type=int, default=int(2e3))
-parser.add_argument('--n_steps_per_epoch', type=int, default=int(2e3))
-parser.add_argument('--sw_dir', type=str, default='./runs/')
-parser.add_argument('--sw_name', type=str, default='debug1')
+parser.add_argument('--n_train_steps', type=int, default=int(7e3))
+parser.add_argument('--n_steps_per_epoch', type=int, default=int(1e3))
+parser.add_argument('--sw_dir', type=str, default='./runs/retrain/')
+parser.add_argument('--sw_name', type=str, default='debug2')
 parser.add_argument('--resample', type=int, default=0)
 parser.add_argument('--horizon', type=int, default=8)
 parser.add_argument('--sample_use_test', type=int, default=1)
 parser.add_argument('--test_ratio', type=float, default=0.2)
 parser.add_argument('--no_cond', type=int, default=0)
 parser.add_argument('--data_name', type=str, default='simple_2_1_2_7_1000_sigma_1')
+parser.add_argument('--retrain_data_name', type=str, default='simple_2_1_2_7_1000_combined_0.5')
 parser.add_argument('--use_invdyn', type=int, default=0)
 parser.add_argument('--normalized', type=int, default=1)
 parser.add_argument('--pred_eps', type=int, default=0)
@@ -62,8 +63,12 @@ parser.add_argument('--sigma', type=float, default=1)
 parser.add_argument('--apply_guide', type=int, default=1)
 parser.add_argument('--guide_clean', type=int, default=1)
 parser.add_argument('--scale', type=float, default=1)
-parser.add_argument('--loops', type=int, default=0)
+parser.add_argument('--loops', type=int, default=2)
 parser.add_argument('--concat', type=int, default=1)
+parser.add_argument('--concat_ratio', type=float, default=0.5)
+
+parser.add_argument('--resample_num', type=int, default=200)
+parser.add_argument('--regen', type=int, default=1)
 
 
 # 解析参数
@@ -113,6 +118,7 @@ diffusion = diffusion.to(device)
 num_train = int(N*args.train_ratio)
 num_val = int(N*args.valid_ratio)
 num_test = int(N*args.test_ratio)
+print('num_train:', num_train, 'num_val:', num_val, 'num_test:', num_test)
 if args.resample and args.normalized:
     train_data = TrainData_norm2(U_3d[:num_train], Y_bar_3d[:num_train], Y_f_3d[:num_train], horizon=args.horizon)
     val_data = TrainData_norm2(U_3d[num_train:num_train+num_val], Y_bar_3d[num_train:num_train+num_val], Y_f_3d[num_train:num_train+num_val], horizon=args.horizon)
@@ -166,26 +172,66 @@ if args.sample_use_test:
 else:
     trainer.train(n_train_steps=args.n_train_steps, no_cond=args.no_cond)
 
+
 for i in range(args.loops):
 
     samples_U, samples_Y_bar, samples_Y_f = trainer.sample_tensors(args=args, sample_num=args.resample_num, test_data=test_data)
+    # samples_U, samples_Y_bar, samples_Y_f = trainer.sample_tensors(args=args, sample_num=args.resample_num, test_data=None)
+    
     print('samples_U shape:', samples_U.shape, 'samples_Y_bar shape:', samples_Y_bar.shape, 'samples_Y_f shape:', samples_Y_f.shape)
     
     samples_U = samples_U.flip(1)
-    
+    if args.regen:
+        env.reset()
+        samples_Y_bar = []
+        samples_Y_f = []
+        for actions in samples_U:
+            observations = env.from_actions_to_obs_direct(actions)
+            samples_Y_bar.append(observations[:-1])
+            samples_Y_f.append(observations[-1])
+        samples_Y_bar = torch.stack(samples_Y_bar)
+        samples_Y_f = torch.stack(samples_Y_f)
+        print('regenerated samples, shape:', samples_Y_bar.shape, samples_Y_f.shape)
+        
     if args.concat:
     # concat half of the samples with the original data
         length = samples_U.shape[0]
+        num_new_samples = int(length*args.concat_ratio)
         # length = length//2
         assert length > 0
-        length_original = U_3d.shape[0]
+        length_of_orginal = length-num_new_samples
         
-        samples_U = np.concatenate([U_3d[:num_train//2], samples_U[:length]], axis=0)
-        samples_Y_bar = np.concatenate([Y_bar_3d[:num_train//2], samples_Y_bar[:length]], axis=0)
-        samples_Y_f = np.concatenate([Y_f_3d[:num_train//2], samples_Y_f[:length]], axis=0)
-
-    model = copy.deepcopy(trainer.ema_model)
-
+        samples_U = np.concatenate([U_3d[:length_of_orginal], samples_U[:num_new_samples]], axis=0)
+        samples_Y_bar = np.concatenate([Y_bar_3d[:length_of_orginal], samples_Y_bar[:num_new_samples]], axis=0)
+        samples_Y_f = np.concatenate([Y_f_3d[:length_of_orginal], samples_Y_f[:num_new_samples]], axis=0)
+        
+        # TODO 随机打乱
+        # index = 
+    # if args.concat:
+    # # concat half of the samples with the original data
+    #     length = samples_U.shape[0]
+    #     # length = length//2
+    #     assert length > 0
+    #     length_original = U_3d.shape[0]
+        
+    #     samples_U = np.concatenate([U_3d[:num_train//2], samples_U[:length]], axis=0)
+    #     samples_Y_bar = np.concatenate([Y_bar_3d[:num_train//2], samples_Y_bar[:length]], axis=0)
+    # #     samples_Y_f = np.concatenate([Y_f_3d[:num_train//2], samples_Y_f[:length]], axis=0)
+    # print('copy trained model')
+    # diffusion_trained_dict = trainer.model.state_dict()
+    
+    # # make new training data
+    # =================================
+    # with open('data/synthetic_data/'+args.retrain_data_name+'.pkl', 'rb') as f:
+    #     pickle_data = pickle.load(f)
+    # sys_A, sys_B, sys_C = pickle_data['sys']['A'], pickle_data['sys']['B'], pickle_data['sys']['C']
+    # adj = pickle_data['adj']
+    # n, m, p, T, N = pickle_data['meta_data']['num_nodes'], pickle_data['meta_data']['input_dim'], pickle_data['meta_data']['output_dim'], pickle_data['meta_data']['control_horizon'], pickle_data['meta_data']['num_samples']
+    # U_3d, Y_bar_3d, Y_f_3d = pickle_data['data']['U'], pickle_data['data']['Y_bar'], pickle_data['data']['Y_f']
+    # env = LinearEnv(sys_A, sys_B, sys_C, adj, T)
+    # samples_U = U_3d[:num_train]
+    # samples_Y_bar = Y_bar_3d[:num_train]
+    # samples_Y_f = Y_f_3d[:num_train]
     if args.resample and args.normalized:
         train_data = TrainData_norm2(samples_U, samples_Y_bar, samples_Y_f, horizon=args.horizon)
         # val_data = TrainData_norm2(U_3d[num_train:num_train+num_val], Y_bar_3d[num_train:num_train+num_val], Y_f_3d[num_train:num_train+num_val], horizon=args.horizon)
@@ -202,24 +248,13 @@ for i in range(args.loops):
         train_data = TrainData(samples_U, samples_Y_bar, samples_Y_f)
         # val_data = TrainData(U_3d[num_train:num_train+num_val], Y_bar_3d[num_train:num_train+num_val], Y_f_3d[num_train:num_train+num_val])
 
-
-
-    trainer = Trainer(model,
-                        train_data,
-                        env=env,
-                        device=device,
-                        train_batch_size=args.batch_size,
-                        train_lr=args.lr,
-                        results_folder=args.train_savepath,
-                        summary_writer_name=args.sw_dir + args.sw_name + f'_finetune_{i}',
-                        resample=args.resample,
-                        use_invdyn=args.use_invdyn,
-                        normalized=args.normalized,
-                        valid_data=val_data,
-                        sigma=args.sigma,
-                        apply_guidance=args.apply_guide,
-                        guide_clean=args.guide_clean)
-
+    trainer.renew_dataset(train_data)
+    # trainer.renew_optimizer(args.lr/10)
+    print('===================finish renewing===================')
+    print('===================finish renewing===================')
+    print('===================finish renewing===================')
+    # trainer.sample_guided(trainer.n_samples,trainer.resample, test_data=test_data)
+    print('==============restart training===========')
     if args.sample_use_test:
         trainer.train(n_train_steps=args.n_train_steps, test_data=test_data, no_cond=args.no_cond)
     else:
