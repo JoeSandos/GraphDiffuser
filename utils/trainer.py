@@ -10,6 +10,9 @@ from torch.nn.functional import mse_loss, mse_loss
 from torch.utils.tensorboard import SummaryWriter
 from utils.distance import MMDLoss
 from model.temporal import LossFunction_noparams
+
+test_data_global = []
+
 class Timer:
 
 	def __init__(self):
@@ -65,7 +68,7 @@ class Trainer(object):
         label_freq=100000,
         results_folder='./results',
         n_reference=8,
-        n_samples=8,
+        n_samples=16,
         resample = False,
         use_invdyn = False,
         normalized = False,
@@ -258,6 +261,7 @@ class Trainer(object):
     #     return cond
     
     def sample_guided(self, sample_num=8, resample=False, test_data=None, no_cond=False, draw_traj=False, fn_choose={'energy':1}):
+        global test_data_global
         self.model.eval()
         self.ema_model.eval()
         
@@ -288,10 +292,13 @@ class Trainer(object):
             with torch.no_grad():
                 # inpaint cond from test_data or random
                 if test_data==None:
+                    
                     y_f = np.random.randn(1, 1, self.env.num_observation) * self.sigma
+                    
+                    
                     y_0 = np.zeros((1, 1, self.env.num_observation))
                     y_0 = self.dataset.normalizer['Y'].normalize(y_0)
-                    # y_f = self.dataset.normalizer['Y'].normalize(y_f)
+                    y_f = self.dataset.normalizer['Y'].normalize(y_f)
                     y_0 = torch.tensor(y_0).to(self.device)
                     y_f = torch.tensor(y_f).to(self.device)
                 else:
@@ -421,10 +428,10 @@ class Trainer(object):
                 mse_u_target_data_appr = mse_loss(y_f_hat_data_appr, y_f.cpu().squeeze()).item()
                 
                 # calculate energy of controls:
-                energy_u = torch.sum(u_min**2)
-                energy_u_data = torch.sum(u_min_data**2)
-                energy_u_data_appr = torch.sum(u_min_data_appr**2)
-                energy_actions = torch.sum(actions**2)
+                energy_u = torch.norm(u_min, p=2)
+                energy_u_data = torch.norm(u_min_data, p=2)
+                energy_u_data_appr = torch.norm(u_min_data_appr, p=2)
+                energy_actions = torch.norm(actions, p=2)
                 
                 
                 mse_total += mse
@@ -1051,7 +1058,7 @@ class Trainer(object):
                     y_f = np.random.randn(1, 1, self.env.num_observation) * self.sigma
                     y_0 = np.zeros((1, 1, self.env.num_observation))
                     y_0 = self.dataset.normalizer['Y'].normalize(y_0)
-                    # y_f = self.dataset.normalizer['Y'].normalize(y_f)
+                    y_f = self.dataset.normalizer['Y'].normalize(y_f)
                     y_0 = torch.tensor(y_0).to(self.device)
                     y_f = torch.tensor(y_f).to(self.device)
                 else:
@@ -1078,8 +1085,8 @@ class Trainer(object):
                 y_f = self.dataset.normalizer['Y'].unnormalize(y_f.cpu())
                 
                 obs_from_act = self.env.from_actions_to_obs_direct(actions)
-                if torch.norm(obs_from_act[-1].squeeze()-y_f.squeeze()) >0.1:
-                    continue
+                # if torch.norm(obs_from_act[-1].squeeze()-y_f.squeeze()) >0.1:
+                #     continue
 
                 U_s.append(actions.flip(0))
                 Y_s.append(observations)

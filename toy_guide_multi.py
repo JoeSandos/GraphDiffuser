@@ -45,9 +45,9 @@ parser.add_argument('--valid_ratio', type=float, default=0.1)
 parser.add_argument('--batch_size', type=int, default=16)
 parser.add_argument('--lr', type=float, default=1e-3)
 parser.add_argument('--train_savepath', type=str, default='./results/toy_noguide')
-parser.add_argument('--n_train_steps', type=int, default=int(6e3))
-parser.add_argument('--n_steps_per_epoch', type=int, default=int(2e3))
-parser.add_argument('--sw_dir', type=str, default='./runs/')
+parser.add_argument('--n_train_steps', type=int, default=int(7e3))
+parser.add_argument('--n_steps_per_epoch', type=int, default=int(1e3))
+parser.add_argument('--sw_dir', type=str, default='./runs/retrain/')
 parser.add_argument('--sw_name', type=str, default='debug2')
 parser.add_argument('--resample', type=int, default=0)
 parser.add_argument('--horizon', type=int, default=8)
@@ -65,6 +65,8 @@ parser.add_argument('--guide_clean', type=int, default=1)
 parser.add_argument('--scale', type=float, default=1)
 parser.add_argument('--loops', type=int, default=2)
 parser.add_argument('--concat', type=int, default=1)
+parser.add_argument('--concat_ratio', type=float, default=0.5)
+
 parser.add_argument('--resample_num', type=int, default=200)
 parser.add_argument('--regen', type=int, default=1)
 
@@ -174,6 +176,8 @@ else:
 for i in range(args.loops):
 
     samples_U, samples_Y_bar, samples_Y_f = trainer.sample_tensors(args=args, sample_num=args.resample_num, test_data=test_data)
+    # samples_U, samples_Y_bar, samples_Y_f = trainer.sample_tensors(args=args, sample_num=args.resample_num, test_data=None)
+    
     print('samples_U shape:', samples_U.shape, 'samples_Y_bar shape:', samples_Y_bar.shape, 'samples_Y_f shape:', samples_Y_f.shape)
     
     samples_U = samples_U.flip(1)
@@ -192,13 +196,17 @@ for i in range(args.loops):
     if args.concat:
     # concat half of the samples with the original data
         length = samples_U.shape[0]
+        num_new_samples = int(length*args.concat_ratio)
         # length = length//2
         assert length > 0
-        length_original = U_3d.shape[0]
+        length_of_orginal = length-num_new_samples
         
-        samples_U = np.concatenate([U_3d[:num_train//2], samples_U[:length]], axis=0)
-        samples_Y_bar = np.concatenate([Y_bar_3d[:num_train//2], samples_Y_bar[:length]], axis=0)
-        samples_Y_f = np.concatenate([Y_f_3d[:num_train//2], samples_Y_f[:length]], axis=0)
+        samples_U = np.concatenate([U_3d[:length_of_orginal], samples_U[:num_new_samples]], axis=0)
+        samples_Y_bar = np.concatenate([Y_bar_3d[:length_of_orginal], samples_Y_bar[:num_new_samples]], axis=0)
+        samples_Y_f = np.concatenate([Y_f_3d[:length_of_orginal], samples_Y_f[:num_new_samples]], axis=0)
+        
+        # TODO 随机打乱
+        # index = 
     # if args.concat:
     # # concat half of the samples with the original data
     #     length = samples_U.shape[0]

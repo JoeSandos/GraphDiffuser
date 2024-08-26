@@ -13,19 +13,21 @@ class EnvBase:
         pass
 
 class LinearEnv(EnvBase):
-    def __init__(self, A, B, C, adj, T):
+    def __init__(self, A, B, C, adj, T, device='cpu'):
         super().__init__()
         assert type(A)==type(B)==type(C)==type(adj)
+        self.device = device
+        
         if type(A)==np.ndarray or type(A)==np.matrix:
-            self.A = torch.tensor(A, dtype=torch.float32)
-            self.B = torch.tensor(B, dtype=torch.float32)
-            self.C = torch.tensor(C, dtype=torch.float32)
-            self.adj = torch.tensor(adj, dtype=torch.float32)
+            self.A = torch.tensor(A, dtype=torch.float32).to(device)
+            self.B = torch.tensor(B, dtype=torch.float32).to(device)
+            self.C = torch.tensor(C, dtype=torch.float32).to(device)
+            self.adj = torch.tensor(adj, dtype=torch.float32).to(device)
         else:
-            self.A = A
-            self.B = B
-            self.C = C
-            self.adj = adj
+            self.A = A.to(device)
+            self.B = B.to(device)
+            self.C = C.to(device)
+            self.adj = adj.to(device)
         self.num_edges = torch.sum(self.adj)
 
         self.max_T = T
@@ -34,10 +36,9 @@ class LinearEnv(EnvBase):
         self.num_observation = C.shape[0]
         self.reset()
         self.calculate_C_0()
-        
     def reset(self, state=None):
         if state is None:
-            self.x = torch.zeros(self.num_nodes)
+            self.x = torch.zeros(self.num_nodes).to(self.device)
         else:
             assert len(state) == self.num_nodes, "Invalid state"
             self.x = state
@@ -72,11 +73,11 @@ class LinearEnv(EnvBase):
         for a in actions:
             obs, _, _ = self.step(a)
             observations.append(obs)
-        return torch.stack(observations)
+        return torch.stack(observations).to(self.device)
     
     def from_actions_to_obs_direct(self, actions):
 
-        H = torch.zeros((self.num_observation * self.max_T, self.num_driver * self.max_T))
+        H = torch.zeros((self.num_observation * self.max_T, self.num_driver * self.max_T)).to(self.device)
 
         for r in range(1, self.max_T + 1):
             for k in range(1, self.max_T + 1):
@@ -90,7 +91,7 @@ class LinearEnv(EnvBase):
         return Y
 
     def calculate_C_0(self):
-        C_o = torch.zeros(self.num_nodes, self.num_driver * self.max_T)
+        C_o = torch.zeros(self.num_nodes, self.num_driver * self.max_T).to(self.device)
         C_o[:, :self.num_driver] = self.B
         for k in range(1, self.max_T):
             C_o[:, self.num_driver*k:(k+1)*self.num_driver] = self.A @ C_o[:, self.num_driver*(k-1):self.num_driver*k]
@@ -114,13 +115,14 @@ class LinearEnv(EnvBase):
         C_o = self.C_o
 
         # Minimum-energy model-based control
-        u = torch.pinverse(C_o) @ y_f # shape: (num_driver * max_T, num_observation) @ (num_observation, 1) = (num_driver * max_T, 1)
+
+        u = torch.pinverse(C_o.cpu()).to(self.device) @ y_f # shape: (num_driver * max_T, num_observation) @ (num_observation, 1) = (num_driver * max_T, 1)
         y_f_hat = torch.matmul(C_o, u) # shape: (num_nodes, num_driver * max_T) @ (num_driver * max_T, 1) = (num_nodes, 1)
         u_reshape = u.reshape(self.max_T, self.num_driver).flip([0])
         return u_reshape, y_f_hat
     
     def calculate_data_driven_control(self, y_f):
-        U = torch.randn(self.num_driver * self.max_T, 100)
+        U = torch.randn(self.num_driver * self.max_T, 100).to(self.device)
         Y = torch.matmul(self.C_o, U)
         u_dd = torch.pinverse(Y @ torch.pinverse(U)) @ y_f
         u_dd_r = u_dd.reshape(self.max_T, self.num_driver).flip([0])
