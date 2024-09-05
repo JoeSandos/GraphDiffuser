@@ -11,6 +11,8 @@ from torch.utils.tensorboard import SummaryWriter
 from utils.distance import MMDLoss
 from model.temporal import LossFunction_noparams
 import matplotlib.pyplot as plt
+from collections import namedtuple
+Batch = namedtuple('Batch', 'trajectories conditions')
 
 test_data_global = []
 
@@ -78,7 +80,8 @@ class Trainer(object):
         sigma = 1,
         apply_guidance = False,
         guide_clean= False,
-        kuramoto = False
+        kuramoto = False,
+        mixup = False
     ):
         super().__init__()
         self.model = diffusion_model
@@ -99,6 +102,11 @@ class Trainer(object):
         self.dataloader = cycle(torch.utils.data.DataLoader(
             self.dataset, batch_size=train_batch_size, num_workers=1, shuffle=True, pin_memory=True
         ))
+        self.mixup = mixup
+        if mixup:
+            self.dataloader2 = cycle(torch.utils.data.DataLoader(
+                self.dataset, batch_size=train_batch_size, num_workers=1, shuffle=True, pin_memory=True
+            ))
         
         if valid_data:
             self.valid_dataloader = cycle(torch.utils.data.DataLoader(
@@ -132,7 +140,10 @@ class Trainer(object):
         self.dataloader = cycle(torch.utils.data.DataLoader(
             self.dataset, batch_size=self.batch_size, num_workers=1, shuffle=True, pin_memory=True
         ))
-    
+        if self.mixup:
+            self.dataloader2 = cycle(torch.utils.data.DataLoader(
+                self.dataset, batch_size=self.batch_size, num_workers=1, shuffle=True, pin_memory=True
+            ))
     def renew_optimizer(self, train_lr):
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=train_lr)
         
@@ -158,6 +169,8 @@ class Trainer(object):
         
         
         timer = Timer()
+        if self.mixup:
+            mixup_activate = 0
         for step in range(n_train_steps):
             # sample for eval
             # if self.step == 0 and self.sample_freq:
@@ -177,6 +190,19 @@ class Trainer(object):
             for i in range(self.gradient_accumulate_every):
                 batch = next(self.dataloader)
                 batch = batch_to_device(batch, device=self.device)
+                if self.mixup:
+                    if mixup_activate % 2 == 0:
+                        batch2 = next(self.dataloader2)
+                        batch2 = batch_to_device(batch2, device=self.device)
+                        if batch.trajectories.shape[0] != batch2.trajectories.shape[0]:
+                            continue
+                        alpha = np.random.beta(0.5, 0.5)
+                        trajectories = alpha * batch.trajectories + (1 - alpha) * batch2.trajectories
+                        cond = {}
+                        cond[0]= alpha * batch.conditions[0] + (1 - alpha) * batch2.conditions[0]
+                        cond[self.dataset.horizon-1] = alpha * batch.conditions[self.dataset.horizon-1] + (1 - alpha) * batch2.conditions[self.dataset.horizon-1]
+                        batch = Batch(trajectories, cond)
+                        
                 # pdb.set_trace()
                 loss, infos = self.model.loss(*batch)
                 loss = loss / self.gradient_accumulate_every

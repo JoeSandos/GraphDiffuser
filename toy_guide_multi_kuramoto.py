@@ -7,8 +7,19 @@ from utils.trainer import Trainer
 from torch.utils.data import DataLoader
 from env.env import Kuramoto
 from model.diffusion import GaussianDiffusion, GaussianInvDynDiffusion, GaussianDiffusionClassifierGuided
-from model.temporal import TemporalUnet
+from model.temporal import *
 import copy
+import os
+# set thread number
+def set_cpu_num(cpu_num):
+    if cpu_num <= 0: return
+    os.environ ['OMP_NUM_THREADS'] = str(cpu_num)
+    os.environ ['OPENBLAS_NUM_THREADS'] = str(cpu_num)
+    os.environ ['MKL_NUM_THREADS'] = str(cpu_num)
+    os.environ ['VECLIB_MAXIMUM_THREADS'] = str(cpu_num)
+    os.environ ['NUMEXPR_NUM_THREADS'] = str(cpu_num)
+    torch.set_num_threads(cpu_num)
+
 def set_seeds(seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -51,7 +62,7 @@ parser.add_argument('--sw_dir', type=str, default='./runs/retrain/')
 parser.add_argument('--sw_name', type=str, default='debug11')
 parser.add_argument('--resample', type=int, default=0)
 parser.add_argument('--horizon', type=int, default=8)
-parser.add_argument('--sample_use_test', type=int, default=0)
+parser.add_argument('--sample_use_test', type=int, default=1)
 parser.add_argument('--test_ratio', type=float, default=0.2)
 parser.add_argument('--no_cond', type=int, default=0)
 parser.add_argument('--data_name', type=str, default='kuramoto_8_8_15_1000_2')
@@ -66,15 +77,16 @@ parser.add_argument('--scale', type=float, default=0)
 parser.add_argument('--loops', type=int, default=2)
 parser.add_argument('--concat', type=int, default=1)
 parser.add_argument('--concat_ratio', type=float, default=0.5)
-
 parser.add_argument('--resample_num', type=int, default=200)
 parser.add_argument('--regen', type=int, default=1)
-
-
+parser.add_argument('--mixup', type=int, default=0)
+parser.add_argument('--use_attn', type=int, default=0)
 # 解析参数
+
 args = parser.parse_args()
 print(args)
 set_seeds(args.seed)
+set_cpu_num(8)
 # import mse function
 from torch.nn.functional import mse_loss, l1_loss
 # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -97,23 +109,27 @@ env = Kuramoto(sys_A, sys_B, sys_C, sys_k, T)
 
 if args.apply_guide:
     assert not args.use_invdyn
-    model = TemporalUnet(transition_dim=m+p, cond_dim=0, dim=32, dim_mults=(1, 4, 8), attention=False)
+    if args.use_attn:
+        model = CondTemporalUnet(transition_dim=m+p, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
+    else:
+        model = TemporalUnet(transition_dim=m+p, cond_dim=0, dim=32, dim_mults=(1, 4, 8), attention=False)
     if not args.resample:
         diffusion = GaussianDiffusionClassifierGuided(model, horizon=env.max_T+1, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1., loss_discount=1.0, loss_weights=None, scale=args.scale)
     else:
         raise NotImplementedError
 elif args.use_invdyn:
-    model = TemporalUnet(transition_dim=p, cond_dim=0, dim=32, dim_mults=(1, 4, 8), attention=False)
-    if args.resample:
-        diffusion = GaussianInvDynDiffusion(model, horizon=args.horizon, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1.0, loss_discount=1.0, loss_weights=None)
-    else:
-        diffusion = GaussianInvDynDiffusion(model, horizon=env.max_T+1, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1.0, loss_discount=1.0, loss_weights=None)
-else:
-    model = TemporalUnet(transition_dim=m+p, cond_dim=0, dim=32, dim_mults=(1, 4, 8), attention=False)
-    if args.resample:
-        diffusion = GaussianDiffusion(model, horizon=args.horizon, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1.0, loss_discount=1.0, loss_weights=None)
-    else:
-        diffusion = GaussianDiffusion(model, horizon=env.max_T+1, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1.0, loss_discount=1.0, loss_weights=None)
+    raise NotImplementedError
+#     model = TemporalUnet(transition_dim=p, cond_dim=0, dim=32, dim_mults=(1, 4, 8), attention=False)
+#     if args.resample:
+#         diffusion = GaussianInvDynDiffusion(model, horizon=args.horizon, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1.0, loss_discount=1.0, loss_weights=None)
+#     else:
+#         diffusion = GaussianInvDynDiffusion(model, horizon=env.max_T+1, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1.0, loss_discount=1.0, loss_weights=None)
+# else:
+#     model = TemporalUnet(transition_dim=m+p, cond_dim=0, dim=32, dim_mults=(1, 4, 8), attention=False)
+#     if args.resample:
+#         diffusion = GaussianDiffusion(model, horizon=args.horizon, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1.0, loss_discount=1.0, loss_weights=None)
+#     else:
+#         diffusion = GaussianDiffusion(model, horizon=env.max_T+1, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1.0, loss_discount=1.0, loss_weights=None)
 diffusion = diffusion.to(device)
 # split training and testing
 
@@ -172,7 +188,8 @@ trainer = Trainer(diffusion,
                   sigma=args.sigma, 
                   apply_guidance=args.apply_guide, 
                   guide_clean=args.guide_clean,
-                  kuramoto=True)
+                  kuramoto=True,
+                  mixup=args.mixup)
 
 
 if args.sample_use_test:

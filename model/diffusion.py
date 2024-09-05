@@ -4,7 +4,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 import pdb
-
+from tqdm import tqdm
 # import diffuser.utils as utils
 from .helpers import (
     cosine_beta_schedule,
@@ -735,9 +735,13 @@ class GaussianDiffusionClassifierGuided(nn.Module):
         diffusion = [x]
         guide_sample = 0
         steps = [i for i in reversed(range(0, self.n_timesteps))]
+        # steps = tqdm(steps)
+        conds = [i for i in cond.values()]
+        conds = torch.cat(conds, dim=1)
+        conds = conds.repeat(batch_size, 1, 1)
         for i in steps:
             timesteps = torch.full((batch_size,), i, device=device, dtype=torch.long)
-            x, guide_rewards, guide_sample = self.p_sample(x, cond, timesteps, returns,
+            x, guide_rewards, guide_sample = self.p_sample(x, conds, timesteps, returns,
                                       apply_guidance=apply_guidance,
                                             guide_clean=guide_clean,
                                             eval_final_guide_loss=(i == steps[-1]))
@@ -809,7 +813,10 @@ class GaussianDiffusionClassifierGuided(nn.Module):
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
         x_noisy = apply_conditioning(x_noisy, cond, self.action_dim)
 
-        x_recon = self.model(x_noisy, cond, t)
+        conds = [i for i in cond.values()]
+        conds = torch.stack(conds, dim=1)
+        #TODO: check if this is correct
+        x_recon = self.model(x_noisy, conds, t)
         # if t.max()==40:
         #     pdb.set_trace()
 
