@@ -1,0 +1,10 @@
+/data/
+/no_train_cond/
+/runs/
+/results/
+script.py
+__pycache__/
+
+.vscode/launch.json
+# png
+*.png
