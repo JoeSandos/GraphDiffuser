@@ -815,7 +815,6 @@ class GaussianDiffusionClassifierGuided(nn.Module):
 
         conds = [i for i in cond.values()]
         conds = torch.stack(conds, dim=1)
-        #TODO: check if this is correct
         x_recon = self.model(x_noisy, conds, t)
         # if t.max()==40:
         #     pdb.set_trace()

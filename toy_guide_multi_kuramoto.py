@@ -73,7 +73,7 @@ parser.add_argument('--pred_eps', type=int, default=0)
 parser.add_argument('--sigma', type=float, default=1)
 parser.add_argument('--apply_guide', type=int, default=1)
 parser.add_argument('--guide_clean', type=int, default=1)
-parser.add_argument('--scale', type=float, default=0)
+parser.add_argument('--scale', type=float, default=1)
 parser.add_argument('--loops', type=int, default=2)
 parser.add_argument('--concat', type=int, default=1)
 parser.add_argument('--concat_ratio', type=float, default=0.5)
@@ -81,6 +81,7 @@ parser.add_argument('--resample_num', type=int, default=200)
 parser.add_argument('--regen', type=int, default=1)
 parser.add_argument('--mixup', type=int, default=0)
 parser.add_argument('--use_attn', type=int, default=0)
+parser.add_argument('--has_invdyn', type=int, default=0)
 # 解析参数
 
 args = parser.parse_args()
@@ -109,7 +110,9 @@ env = Kuramoto(sys_A, sys_B, sys_C, sys_k, T)
 
 if args.apply_guide:
     assert not args.use_invdyn
-    if args.use_attn:
+    if args.has_invdyn:
+        model = TemporalUnetInvdyn(transition_dim=p, action_dim=m, cond_dim=0, dim=32, dim_mults=(1, 4, 8), attention=False)
+    elif args.use_attn:
         model = CondTemporalUnet(transition_dim=m+p, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
     else:
         model = TemporalUnet(transition_dim=m+p, cond_dim=0, dim=32, dim_mults=(1, 4, 8), attention=False)
@@ -117,8 +120,8 @@ if args.apply_guide:
         diffusion = GaussianDiffusionClassifierGuided(model, horizon=env.max_T+1, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1., loss_discount=1.0, loss_weights=None, scale=args.scale)
     else:
         raise NotImplementedError
-elif args.use_invdyn:
-    raise NotImplementedError
+# elif args.use_invdyn:
+#     raise NotImplementedError
 #     model = TemporalUnet(transition_dim=p, cond_dim=0, dim=32, dim_mults=(1, 4, 8), attention=False)
 #     if args.resample:
 #         diffusion = GaussianInvDynDiffusion(model, horizon=args.horizon, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1.0, loss_discount=1.0, loss_weights=None)
@@ -270,7 +273,7 @@ for i in range(args.loops):
         # val_data = TrainData2(U_3d[num_train:num_train+num_val], Y_bar_3d[num_train:num_train+num_val], Y_f_3d[num_train:num_train+num_val], horizon=args.horizon)
         
     elif args.normalized:
-        train_data = TrainData_norm(samples_U, samples_Y_bar, samples_Y_f)
+        train_data = TrainData_norm(samples_U, samples_Y_bar, samples_Y_f, kuramoto=True)
         # val_data = TrainData_norm(U_3d[num_train:num_train+num_val], Y_bar_3d[num_train:num_train+num_val], Y_f_3d[num_train:num_train+num_val])
         
     else:

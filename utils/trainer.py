@@ -288,7 +288,7 @@ class Trainer(object):
     #             cond[i] = cond_overall[i]
     #     return cond
     
-    def sample_guided(self, sample_num=8, resample=False, test_data=None, no_cond=False, draw_traj=False, fn_choose={'specific_end':1}):
+    def sample_guided(self, sample_num=8, resample=False, test_data=None, no_cond=False, draw_traj=False, fn_choose={'energy':1}):
         global test_data_global
         self.model.eval()
         self.ema_model.eval()
