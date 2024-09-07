@@ -96,7 +96,7 @@ class TrainData2(Dataset):
         return self.U.shape[0]
 
 class TrainData_norm(Dataset):
-    def __init__(self, U, Y_bar, Y_f, normalizer='LimitsNormalizer', kuramoto=False):
+    def __init__(self, U, Y_bar, Y_f, normalizer='identity_normalizer', kuramoto=False):
         super().__init__()
         assert len(U.shape)==3 and len(Y_bar.shape)==3 and len(Y_f.shape)==2 # N, T, m; N, T-1, p; N, p
         U_tensor = torch.tensor(U, dtype=torch.float32)

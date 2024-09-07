@@ -109,15 +109,23 @@ U_3d, Y_bar_3d, Y_f_3d = pickle_data['data']['U'], pickle_data['data']['Y_bar'],
 env = Kuramoto(sys_A, sys_B, sys_C, sys_k, T)
 
 if args.apply_guide:
-    assert not args.use_invdyn
-    if args.has_invdyn:
-        model = TemporalUnetInvdyn(transition_dim=p, action_dim=m, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
-    elif args.use_attn:
-        model = CondTemporalUnet(transition_dim=m+p, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
+    if args.use_invdyn:
+        if args.has_invdyn:
+            model = TemporalUnetInvdyn(transition_dim=p, action_dim=m, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
+        elif args.use_attn:
+            model = CondTemporalUnet(transition_dim=p, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
+        else:
+            model = TemporalUnet(transition_dim=p, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
     else:
-        model = TemporalUnet(transition_dim=m+p, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
+    # assert not args.use_invdyn
+        if args.has_invdyn:
+            model = TemporalUnetInvdyn(transition_dim=p, action_dim=m, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
+        elif args.use_attn:
+            model = CondTemporalUnet(transition_dim=m+p, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
+        else:
+            model = TemporalUnet(transition_dim=m+p, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
     if not args.resample:
-        diffusion = GaussianDiffusionClassifierGuided(model, horizon=env.max_T+1, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1., loss_discount=1.0, loss_weights=None, scale=args.scale)
+        diffusion = GaussianDiffusionClassifierGuided(model, horizon=env.max_T+1, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1., loss_discount=1.0, loss_weights=None, scale=args.scale, inv_dyn=args.use_invdyn)
     else:
         raise NotImplementedError
 # elif args.use_invdyn:

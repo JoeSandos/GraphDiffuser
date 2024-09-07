@@ -521,15 +521,24 @@ class GaussianInvDynDiffusion(nn.Module):
 class GaussianDiffusionClassifierGuided(nn.Module):
     def __init__(self, model, horizon, observation_dim, action_dim, n_timesteps=1000,
         loss_type='l2', clip_denoised=False, predict_epsilon=True,
-        action_weight=1.0, loss_discount=1.0, loss_weights=None, scale=0.01
+        action_weight=1.0, loss_discount=1.0, loss_weights=None, scale=0.01, inv_dyn=False,
     ):
         super().__init__()
         self.horizon = horizon
         self.observation_dim = observation_dim
-        self.action_dim = action_dim
-        self.transition_dim = observation_dim + action_dim
+        if not inv_dyn:
+            self.real_action_dim = action_dim
+            self.action_dim = action_dim
+            self.transition_dim = observation_dim + action_dim
+        else:
+            self.real_action_dim = action_dim
+            self.action_dim = 0
+            self.transition_dim = observation_dim
         self.model = model
 
+        if inv_dyn:
+            self.inv_model = ARInvModel(hidden_dim=64, observation_dim=observation_dim, action_dim=action_dim)
+        
         betas = cosine_beta_schedule(n_timesteps)
         alphas = 1. - betas
         alphas_cumprod = torch.cumprod(alphas, axis=0)
@@ -538,7 +547,7 @@ class GaussianDiffusionClassifierGuided(nn.Module):
         self.n_timesteps = int(n_timesteps)
         self.clip_denoised = clip_denoised
         self.predict_epsilon = predict_epsilon
-
+        self.use_inv_dyn = inv_dyn
         self.register_buffer('betas', betas)
         self.register_buffer('alphas_cumprod', alphas_cumprod)
         self.register_buffer('alphas_cumprod_prev', alphas_cumprod_prev)
@@ -721,7 +730,10 @@ class GaussianDiffusionClassifierGuided(nn.Module):
             # eval guidance loss one last time for filtering if desired
             #       (even if not applied during sampling)
             _, guide_rewards, guide_sample = self.guidance(x_out.clone().detach().requires_grad_(), num_samp=1)
-        return x_out, guide_rewards, guide_sample
+        if apply_guidance:
+            return x_out, guide_rewards, guide_sample
+        else:
+            return x_out, None, None
 
     @torch.no_grad()
     def p_sample_loop(self, shape, cond, returns=None, verbose=True, return_diffusion=False, apply_guidance=True,
@@ -741,6 +753,9 @@ class GaussianDiffusionClassifierGuided(nn.Module):
         conds = conds.repeat(batch_size, 1, 1)
         for i in steps:
             timesteps = torch.full((batch_size,), i, device=device, dtype=torch.long)
+            # TODO :fix invdyn_bug
+            if self.use_inv_dyn:
+                apply_guidance = 0
             x, guide_rewards, guide_sample = self.p_sample(x, conds, timesteps, returns,
                                       apply_guidance=apply_guidance,
                                             guide_clean=guide_clean,
@@ -753,8 +768,8 @@ class GaussianDiffusionClassifierGuided(nn.Module):
         #     print('===== GUIDANCE LOSSES ======')
         #     for k,v in guide_rewards.items():
         #         print('%s: %.012f' % (k, np.nanmean(v.cpu())))
-        
-        x, guide_sample = sort_by_values(x, guide_sample, decending=False)
+        if not self.use_inv_dyn:
+            x, guide_sample = sort_by_values(x, guide_sample, decending=False)
 
         if return_diffusion:
             diffusion = torch.stack(diffusion, dim=1)
@@ -834,7 +849,20 @@ class GaussianDiffusionClassifierGuided(nn.Module):
     def loss(self, x, *args):
         batch_size = len(x)
         t = torch.randint(0, self.n_timesteps, (batch_size,), device=x.device).long()
-        return self.p_losses(x, *args, t)
+        if self.use_inv_dyn:
+            x_t = x[:, :-1, self.real_action_dim:]
+            a_t = x[:, :-1, :self.real_action_dim]
+            x_t_1 = x[:, 1:, self.real_action_dim:]
+            x_comb_t = torch.cat([x_t, x_t_1], dim=-1)
+            x_comb_t = x_comb_t.reshape(-1, 2 * self.observation_dim)
+            a_t = a_t.reshape(-1, self.real_action_dim)
+            inv_loss = torch.functional.F.mse_loss(self.inv_model(x_comb_t), a_t)
+            diffuse_loss, info = self.p_losses(x[:, :, self.real_action_dim:], *args, t)
+            info['diffuse_loss'] = diffuse_loss.item()
+            info['inv_loss'] = inv_loss.item()
+            return (1 / 2) * (diffuse_loss + inv_loss), info
+        else:
+            return self.p_losses(x, *args, t)
 
     def forward(self, cond, batch_size=1, *args, **kwargs):
         return self.conditional_sample(cond, batch_size, *args, **kwargs)
@@ -846,17 +874,18 @@ class ARInvModel(nn.Module):
         self.observation_dim = observation_dim
         self.action_dim = action_dim
 
-        self.action_embed_hid = 128
-        self.out_lin = 128
-        self.num_bins = 80
+        self.action_embed_hid = 64
+        self.out_lin = 64
+        # self.num_bins = 80
 
-        self.up_act = up_act
-        self.low_act = low_act
-        self.bin_size = (self.up_act - self.low_act) / self.num_bins
-        self.ce_loss = nn.CrossEntropyLoss()
+        # self.up_act = up_act
+        # self.low_act = low_act
+        # self.bin_size = (self.up_act - self.low_act) / self.num_bins
+        # self.ce_loss = nn.CrossEntropyLoss()
+        self.mse_loss = nn.MSELoss()
 
         self.state_embed = nn.Sequential(
-            nn.Linear(2 * self.observation_dim, hidden_dim),
+            nn.Linear(3 * self.observation_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
@@ -865,55 +894,61 @@ class ARInvModel(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
         )
 
-        self.lin_mod = nn.ModuleList([nn.Linear(i, self.out_lin) for i in range(1, self.action_dim)])
-        self.act_mod = nn.ModuleList([nn.Sequential(nn.Linear(hidden_dim, self.action_embed_hid), nn.ReLU(),
-                                                    nn.Linear(self.action_embed_hid, self.num_bins))])
+        self.lin_mod = nn.ModuleList([nn.Linear(i, self.out_lin) for i in range(1,self.action_dim)])
+        self.act_mod = nn.ModuleList()
+        self.act_mod.append(nn.Sequential(nn.Linear(hidden_dim, self.action_embed_hid), nn.ReLU(),
+                              nn.Linear(self.action_embed_hid, 1)))
 
-        for _ in range(1, self.action_dim):
+        for _ in range( self.action_dim-1):
             self.act_mod.append(
                 nn.Sequential(nn.Linear(hidden_dim + self.out_lin, self.action_embed_hid), nn.ReLU(),
-                              nn.Linear(self.action_embed_hid, self.num_bins)))
+                              nn.Linear(self.action_embed_hid, 1)))
 
-    def forward(self, comb_state, deterministic=False):
-        state_inp = comb_state
-
+    def forward(self, comb_state):
+        # state_inp = comb_state
+        state1 = comb_state[..., :self.observation_dim]
+        state2 = comb_state[..., self.observation_dim:]
+        state_diff = state2 - state1
+        state_inp = torch.cat([state1, state_diff, state2], dim=-1)
         state_d = self.state_embed(state_inp)
+        
         lp_0 = self.act_mod[0](state_d)
-        l_0 = torch.distributions.Categorical(logits=lp_0).sample()
+        a = [lp_0]
+        # l_0 = torch.distributions.Categorical(logits=lp_0).sample()
 
-        if deterministic:
-            a_0 = self.low_act + (l_0 + 0.5) * self.bin_size
-        else:
-            a_0 = torch.distributions.Uniform(self.low_act + l_0 * self.bin_size,
-                                              self.low_act + (l_0 + 1) * self.bin_size).sample()
+        # if deterministic:
+        #     a_0 = self.low_act + (l_0 + 0.5) * self.bin_size
+        # else:
+        #     a_0 = torch.distributions.Uniform(self.low_act + l_0 * self.bin_size,
+        #                                       self.low_act + (l_0 + 1) * self.bin_size).sample()
 
-        a = [a_0.unsqueeze(1)]
-
-        for i in range(1, self.action_dim):
-            lp_i = self.act_mod[i](torch.cat([state_d, self.lin_mod[i - 1](torch.cat(a, dim=1))], dim=1))
-            l_i = torch.distributions.Categorical(logits=lp_i).sample()
-
-            if deterministic:
-                a_i = self.low_act + (l_i + 0.5) * self.bin_size
-            else:
-                a_i = torch.distributions.Uniform(self.low_act + l_i * self.bin_size,
-                                                  self.low_act + (l_i + 1) * self.bin_size).sample()
-
-            a.append(a_i.unsqueeze(1))
-
-        return torch.cat(a, dim=1)
-
-    def calc_loss(self, comb_state, action):
-        eps = 1e-8
-        action = torch.clamp(action, min=self.low_act + eps, max=self.up_act - eps)
-        l_action = torch.div((action - self.low_act), self.bin_size, rounding_mode='floor').long()
-        state_inp = comb_state
-
-        state_d = self.state_embed(state_inp)
-        loss = self.ce_loss(self.act_mod[0](state_d), l_action[:, 0])
 
         for i in range(1, self.action_dim):
-            loss += self.ce_loss(self.act_mod[i](torch.cat([state_d, self.lin_mod[i - 1](action[:, :i])], dim=1)),
-                                     l_action[:, i])
+            lp_i = self.act_mod[i](torch.cat([state_d, self.lin_mod[i-1](torch.cat(a, dim=-1))], dim=1))
+            # l_i = torch.distributions.Categorical(logits=lp_i).sample()
 
-        return loss/self.action_dim
+            # if deterministic:
+            #     a_i = self.low_act + (l_i + 0.5) * self.bin_size
+            # else:
+            #     a_i = torch.distributions.Uniform(self.low_act + l_i * self.bin_size,
+            #                                       self.low_act + (l_i + 1) * self.bin_size).sample()
+            a.append(lp_i)
+
+
+        out = torch.cat(a, dim=-1)
+        return out 
+
+    # def calc_loss(self, comb_state, action):
+    #     eps = 1e-8
+    #     action = torch.clamp(action, min=self.low_act + eps, max=self.up_act - eps)
+    #     l_action = torch.div((action - self.low_act), self.bin_size, rounding_mode='floor').long()
+    #     state_inp = comb_state
+
+    #     state_d = self.state_embed(state_inp)
+    #     loss = self.ce_loss(self.act_mod[0](state_d), l_action[:, 0])
+
+    #     for i in range(1, self.action_dim):
+    #         loss += self.ce_loss(self.act_mod[i](torch.cat([state_d, self.lin_mod[i - 1](action[:, :i])], dim=1)),
+    #                                  l_action[:, i])
+
+    #     return loss/self.action_dim

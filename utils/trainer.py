@@ -179,9 +179,9 @@ class Trainer(object):
 
             if self.sample_freq and self.step % self.sample_freq == 0:
                 if self.apply_guidance:
-                    self.sample_guided(self.n_samples,self.resample, test_data, no_cond)
-                elif self.use_invdyn:
-                    self.sample_invdyn(self.n_samples,self.resample, test_data, no_cond)
+                    self.sample_guided(self.n_samples,self.resample, test_data, no_cond, use_invdyn=self.use_invdyn)
+                # elif self.use_invdyn:
+                #     self.sample_invdyn(self.n_samples,self.resample, test_data, no_cond)
                 else:
                     self.sample(self.n_samples,self.resample, test_data, no_cond)
                 
@@ -203,6 +203,7 @@ class Trainer(object):
                         cond[0]= alpha * batch.conditions[0] + (1 - alpha) * batch2.conditions[0]
                         cond[self.dataset.horizon-1] = alpha * batch.conditions[self.dataset.horizon-1] + (1 - alpha) * batch2.conditions[self.dataset.horizon-1]
                         batch = Batch(trajectories, cond)
+                    mixup_activate += 1
                         
                 # pdb.set_trace()
                 loss, infos = self.model.loss(*batch)
@@ -230,9 +231,9 @@ class Trainer(object):
                 
             self.step += 1
         if self.apply_guidance:
-            self.sample_guided(self.n_samples,self.resample, test_data, no_cond, draw_traj=True)
-        elif self.use_invdyn:
-            self.sample_invdyn(self.n_samples,self.resample, test_data, no_cond, draw_traj=True)
+            self.sample_guided(self.n_samples,self.resample, test_data, no_cond, draw_traj=True, use_invdyn=self.use_invdyn)
+        # elif self.use_invdyn:
+        #     self.sample_invdyn(self.n_samples,self.resample, test_data, no_cond, draw_traj=True)
         else:
             self.sample(self.n_samples,self.resample, test_data, no_cond, draw_traj=True)
         
@@ -289,7 +290,7 @@ class Trainer(object):
     #             cond[i] = cond_overall[i]
     #     return cond
     
-    def sample_guided(self, sample_num=8, resample=False, test_data=None, no_cond=False, draw_traj=False, fn_choose={'energy':1}):
+    def sample_guided(self, sample_num=8, resample=False, test_data=None, no_cond=False, draw_traj=False, fn_choose={'energy':1}, use_invdyn=False):
         global test_data_global
         self.model.eval()
         self.ema_model.eval()
@@ -354,11 +355,21 @@ class Trainer(object):
 
 
                     trajectories = trajectories.cpu()
-                    
-                    actions = trajectories[0, :-1, :self.ema_model.action_dim] # T, m
-                    # action = actions[0, 0]
-                    observations = trajectories[0, 1:, self.ema_model.action_dim:] #  T, p
-               
+                    if not use_invdyn:
+                        actions = trajectories[0, :-1, :self.ema_model.action_dim] # T, m
+                        # action = actions[0, 0]
+                        observations = trajectories[0, 1:, self.ema_model.action_dim:] #  T, p
+                    else:
+                        observations = trajectories[0, 1:]
+                        actions = []
+                        for i in range(self.env.max_T):
+                            obs_comb = torch.cat([trajectories[:, i, :], trajectories[:, i+1, :]], dim=-1)
+                            # obs_comb = obs_comb.reshape(-1, 2*self.ema_model.observation_dim)
+                            action = self.ema_model.inv_model(obs_comb)
+                            actions.append(action.squeeze(0))
+                        actions = torch.stack(actions).cpu()
+                        actions_with_end = torch.cat([actions, torch.zeros(1, actions.size(-1))], dim=0)
+                        trajectories = torch.cat([actions_with_end.unsqueeze(0), trajectories], dim=-1)
                 else:
                     raise NotImplementedError
                     # cond = {0: y_0, self.ema_model.horizon-1: y_f}
@@ -425,12 +436,12 @@ class Trainer(object):
                         
                     observations = observations.squeeze(0)
                     actions = actions.squeeze(0)
-                
-                for k,v in guidances.items():
-                    if epoch<4:
-                        # pdb.set_trace()
-                        self.writer.add_scalar(f'guidance/{k}_{epoch}', np.nanmean(v.cpu()), self.step)
-                        
+                if not use_invdyn:
+                    for k,v in guidances.items():
+                        if epoch<4:
+                            # pdb.set_trace()
+                            self.writer.add_scalar(f'guidance/{k}_{epoch}', np.nanmean(v.cpu()), self.step)
+                            
                     
                 
             # evaluate the correspondense of actions and observations
