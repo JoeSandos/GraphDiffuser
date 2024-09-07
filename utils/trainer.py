@@ -170,8 +170,8 @@ class Trainer(object):
         
         
         timer = Timer()
-        if self.mixup:
-            mixup_activate = 0
+        # if self.mixup:
+        #     mixup_activate = 0
         for step in range(n_train_steps):
             # sample for eval
             # if self.step == 0 and self.sample_freq:
@@ -192,7 +192,9 @@ class Trainer(object):
                 batch = next(self.dataloader)
                 batch = batch_to_device(batch, device=self.device)
                 if self.mixup:
-                    if mixup_activate % 2 == 0:
+                    # sample mixup_activate from bernoulli distribution
+                    mixup_activate = np.random.binomial(1, 0.5)
+                    if mixup_activate:
                         batch2 = next(self.dataloader2)
                         batch2 = batch_to_device(batch2, device=self.device)
                         if batch.trajectories.shape[0] != batch2.trajectories.shape[0]:
@@ -203,7 +205,7 @@ class Trainer(object):
                         cond[0]= alpha * batch.conditions[0] + (1 - alpha) * batch2.conditions[0]
                         cond[self.dataset.horizon-1] = alpha * batch.conditions[self.dataset.horizon-1] + (1 - alpha) * batch2.conditions[self.dataset.horizon-1]
                         batch = Batch(trajectories, cond)
-                    mixup_activate += 1
+                    # mixup_activate += 1
                         
                 # pdb.set_trace()
                 loss, infos = self.model.loss(*batch)
