@@ -282,7 +282,7 @@ class Kuramoto(EnvBase):
         return self.current_phase
     
     def from_actions_to_obs(self, actions, start=None):
-        assert len(actions) == self.max_T, "Invalid actions"
+        assert len(actions) == self.max_T, f"Invalid actions, {len(actions)},{self.max_T}"
         if start is not None:
             self.reset(start)
         else:

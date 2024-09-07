@@ -205,7 +205,7 @@ class CondTemporalUnet(nn.Module):
             Conv1dBlock(dim, dim, kernel_size=5),
             nn.Conv1d(dim, transition_dim, 1),
         )
-
+        # self.cond_linear=nn.Linear(cond_dim*2, transition_dim)
     def forward(self, x, cond, time, returns=None):
         '''
             x : [ batch x horizon x transition ]
@@ -237,6 +237,7 @@ class CondTemporalUnet(nn.Module):
         x = self.final_conv(x)
 
         x = einops.rearrange(x, 'b t h -> b h t')
+        # x = x*self.cond_linear(cond.view(cond.shape[0],1,-1))
         return x
 
 class TemporalUnetInvdyn(nn.Module):
@@ -303,6 +304,7 @@ class TemporalUnetInvdyn(nn.Module):
             Conv1dBlock(dim, dim, kernel_size=5),
             nn.Conv1d(dim, transition_dim, 1),
         )
+        # self.cond_linear=nn.Linear(cond_dim*2, transition_dim)
         
         self.inv_dyn = ARInvModel(hidden_dim=dim, observation_dim=transition_dim, action_dim=action_dim)
 
@@ -339,6 +341,7 @@ class TemporalUnetInvdyn(nn.Module):
         x = self.final_conv(x)
 
         x = einops.rearrange(x, 'b t h -> b h t')
+        # x = x*self.cond_linear(cond.view(cond.shape[0],1,-1))
         actions_pred = []
         for i in range(x.shape[1]-1):
             comb_state = torch.cat([x[:,i,:], x[:,i+1,:]], dim=-1)

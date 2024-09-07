@@ -7,7 +7,8 @@ import pdb
 import time
 from .arrays import batch_to_device, to_np, to_device, apply_dict
 from torch.nn.functional import mse_loss, mse_loss
-from torch.utils.tensorboard import SummaryWriter
+# from torch.utils.tensorboard import SummaryWriter
+from tensorboardX import SummaryWriter
 from utils.distance import MMDLoss
 from model.temporal import LossFunction_noparams
 import matplotlib.pyplot as plt
@@ -415,8 +416,12 @@ class Trainer(object):
                 if self.normalized:
                     observations = self.dataset.normalizer['Y'].unnormalize(observations.unsqueeze(0))
                     actions = self.dataset.normalizer['U'].unnormalize(actions.unsqueeze(0))
-                    y_f = self.dataset.normalizer['Y'].unnormalize(y_f.cpu()).squeeze(0).squeeze(0)
-                    y_0 = self.dataset.normalizer['Y'].unnormalize(y_0.cpu()).squeeze(0).squeeze(0)
+                    if test_data:
+                        y_f = test_data.normalizer['Y'].unnormalize(y_f.cpu()).squeeze(0).squeeze(0)
+                        y_0 = test_data.normalizer['Y'].unnormalize(y_0.cpu()).squeeze(0).squeeze(0)
+                    else:
+                        y_f = self.dataset.normalizer['Y'].unnormalize(y_f.cpu()).squeeze(0).squeeze(0)
+                        y_0 = self.dataset.normalizer['Y'].unnormalize(y_0.cpu()).squeeze(0).squeeze(0)
                         
                     observations = observations.squeeze(0)
                     actions = actions.squeeze(0)
@@ -630,7 +635,7 @@ class Trainer(object):
                     y_f = np.random.randn(1, 1, self.env.num_observation) * self.sigma
                     y_0 = np.zeros((1, 1, self.env.num_observation))
                     y_0 = self.dataset.normalizer['Y'].normalize(y_0)
-                    # y_f = self.dataset.normalizer['Y'].normalize(y_f)
+                    y_f = self.dataset.normalizer['Y'].normalize(y_f)
                     y_0 = torch.tensor(y_0).to(self.device)
                     y_f = torch.tensor(y_f).to(self.device)
                 else:
@@ -708,11 +713,16 @@ class Trainer(object):
                 if self.normalized:
                     observations = self.dataset.normalizer['Y'].unnormalize(observations.unsqueeze(0))
                     actions = self.dataset.normalizer['U'].unnormalize(actions.unsqueeze(0))
-                    y_f = self.dataset.normalizer['Y'].unnormalize(y_f.cpu())
-                        
+                    if test_data:
+                        y_f = test_data.normalizer['Y'].unnormalize(y_f.cpu()).squeeze(0).squeeze(0)
+                        y_0 = test_data.normalizer['Y'].unnormalize(y_0.cpu()).squeeze(0).squeeze(0)
+                    else:
+                        y_f = self.dataset.normalizer['Y'].unnormalize(y_f.cpu()).squeeze(0).squeeze(0)
+                        y_0 = self.dataset.normalizer['Y'].unnormalize(y_0.cpu()).squeeze(0).squeeze(0)
+                            
                     observations = observations.squeeze(0)
                     actions = actions.squeeze(0)
-                
+                    
             # evaluate the correspondense of actions and observations
                 self.env.reset()
                 obs_from_act = self.env.from_actions_to_obs_direct(actions)
@@ -948,7 +958,12 @@ class Trainer(object):
                 if self.normalized:
                     observations = self.dataset.normalizer['Y'].unnormalize(observations.unsqueeze(0))
                     actions = self.dataset.normalizer['U'].unnormalize(actions.unsqueeze(0))
-                    y_f = self.dataset.normalizer['Y'].unnormalize(y_f.cpu()).squeeze(0).squeeze(0)
+                    if test_data:
+                        y_f = test_data.normalizer['Y'].unnormalize(y_f.cpu()).squeeze(0).squeeze(0)
+                        y_0 = test_data.normalizer['Y'].unnormalize(y_0.cpu()).squeeze(0).squeeze(0)
+                    else:
+                        y_f = self.dataset.normalizer['Y'].unnormalize(y_f.cpu()).squeeze(0).squeeze(0)
+                        y_0 = self.dataset.normalizer['Y'].unnormalize(y_0.cpu()).squeeze(0).squeeze(0)
                         
                     observations = observations.squeeze(0)
                     actions = actions.squeeze(0)
@@ -1154,8 +1169,12 @@ class Trainer(object):
                 if self.normalized:
                     actions = self.dataset.normalizer['U'].unnormalize(actions)
                     observations = self.dataset.normalizer['Y'].unnormalize(observations)
-                    y_f = self.dataset.normalizer['Y'].unnormalize(y_f.cpu())
-                    y_0 = self.dataset.normalizer['Y'].unnormalize(y_0.cpu()).squeeze(0).squeeze(0)
+                    if test_data:
+                        y_f = test_data.normalizer['Y'].unnormalize(y_f.cpu()).squeeze(0).squeeze(0)
+                        y_0 = test_data.normalizer['Y'].unnormalize(y_0.cpu()).squeeze(0).squeeze(0)
+                    else:
+                        y_f = self.dataset.normalizer['Y'].unnormalize(y_f.cpu()).squeeze(0).squeeze(0)
+                        y_0 = self.dataset.normalizer['Y'].unnormalize(y_0.cpu()).squeeze(0).squeeze(0)
                 
                 obs_from_act = self.env.from_actions_to_obs_direct(actions, start=y_0)
                 if mse_loss(obs_from_act[-1].squeeze(),y_f.squeeze()) >0.5:
