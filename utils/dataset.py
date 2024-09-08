@@ -35,6 +35,7 @@ class TrainData(Dataset):
         self.U = self.normalizer['U'].normalize(self.U)
         self.Y = self.normalizer['Y'].normalize(self.Y)
         
+        raise NotImplementedError('This class is not implemented yet')
         
     def __getitem__(self, index):
         u, y = self.U[index], self.Y[index] # T+1, m; T+1, p
@@ -81,6 +82,7 @@ class TrainData2(Dataset):
 
         self.U = self.normalizer['U'].normalize(self.U)
         self.Y = self.normalizer['Y'].normalize(self.Y)
+        raise NotImplementedError('This class is not implemented yet')
         
     def __getitem__(self, index):
         u, y = self.U[index], self.Y[index] # horizon, m; horizon, p
@@ -175,6 +177,7 @@ class TrainData_norm2(Dataset):
 
         self.U = self.normalizer['U'].normalize(self.U)
         self.Y = self.normalizer['Y'].normalize(self.Y)
+        raise NotImplementedError('This class is not implemented yet')
 
     def __getitem__(self, index):
         u, y = self.U[index], self.Y[index] # T+1, m; T+1, p

@@ -82,6 +82,7 @@ parser.add_argument('--regen', type=int, default=1)
 parser.add_argument('--mixup', type=int, default=0)
 parser.add_argument('--use_attn', type=int, default=0)
 parser.add_argument('--has_invdyn', type=int, default=0)
+parser.add_argument('--use_end', type=int, default=0)
 # 解析参数
 
 args = parser.parse_args()
@@ -114,6 +115,8 @@ if args.apply_guide:
             model = TemporalUnetInvdyn(transition_dim=p, action_dim=m, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
         elif args.use_attn:
             model = CondTemporalUnet(transition_dim=p, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
+        elif args.use_end:
+            model = EndTemporalUnet(transition_dim=p, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
         else:
             model = TemporalUnet(transition_dim=p, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
     else:
