@@ -12,6 +12,7 @@ from .helpers import (
     apply_conditioning,
     Losses,
 )
+from .temporal import TemporalUnetInvdyn
 
 Sample = namedtuple('Sample', 'trajectories values chains guidances')
 
@@ -521,7 +522,8 @@ class GaussianInvDynDiffusion(nn.Module):
 class GaussianDiffusionClassifierGuided(nn.Module):
     def __init__(self, model, horizon, observation_dim, action_dim, n_timesteps=1000,
         loss_type='l2', clip_denoised=False, predict_epsilon=True,
-        action_weight=1.0, loss_discount=1.0, loss_weights=None, scale=0.01, inv_dyn=False,
+        action_weight=1.0, loss_discount=1.0, loss_weights=None, scale=0.01, inv_dyn=False, 
+        train_conditioning=True, use_lambda = False
     ):
         super().__init__()
         self.horizon = horizon
@@ -535,7 +537,9 @@ class GaussianDiffusionClassifierGuided(nn.Module):
             self.action_dim = 0
             self.transition_dim = observation_dim
         self.model = model
-
+        self.train_conditioning = train_conditioning
+        self.use_lambda = use_lambda
+        
         if inv_dyn:
             self.inv_model = ARInvModel(hidden_dim=64, observation_dim=observation_dim, action_dim=action_dim)
         
@@ -822,23 +826,28 @@ class GaussianDiffusionClassifierGuided(nn.Module):
 
         return sample
 
-    def p_losses(self, x_start, cond, t):
+    def p_losses(self, x_start, cond, t, mask=None):
         noise = torch.randn_like(x_start)
 
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
-        x_noisy = apply_conditioning(x_noisy, cond, self.action_dim)
+        if self.train_conditioning:
+            x_noisy = apply_conditioning(x_noisy, cond, self.action_dim)
 
         conds = [i for i in cond.values()]
         conds = torch.stack(conds, dim=1)
         x_recon = self.model(x_noisy, conds, t)
         # if t.max()==40:
         #     pdb.set_trace()
-
-        if not self.predict_epsilon:
-            x_recon = apply_conditioning(x_recon, cond, self.action_dim)
+        if self.train_conditioning:
+            if not self.predict_epsilon:
+                x_recon = apply_conditioning(x_recon, cond, self.action_dim)
 
         assert noise.shape == x_recon.shape
 
+        if mask is not None:
+            x_recon = x_recon * mask
+            x_start = x_start * mask
+            noise = noise * mask
         if self.predict_epsilon:
             loss, info = self.loss_fn(x_recon, noise)
         else:
@@ -862,7 +871,19 @@ class GaussianDiffusionClassifierGuided(nn.Module):
             info['inv_loss'] = inv_loss.item()
             return (1 / 2) * (diffuse_loss + inv_loss), info
         else:
-            return self.p_losses(x, *args, t)
+            mask=None
+            # mask = None
+            if self.use_lambda:
+                # the type of model should be TemporalUnetInvdyn
+                assert isinstance(self.model, TemporalUnetInvdyn)
+                mask = torch.ones_like(x)
+            # mask last action
+                mask[:, -1, :self.real_action_dim] = 0
+                lamb=0.99
+                lamb_power_t = lamb**t.float() # size: [batch_size]
+                # apply to mask action:
+                mask[:, :, :self.real_action_dim] = mask[:, :, :self.real_action_dim] * lamb_power_t.unsqueeze(1).unsqueeze(2)
+            return self.p_losses(x, *args, t, mask=mask)
 
     def forward(self, cond, batch_size=1, *args, **kwargs):
         return self.conditional_sample(cond, batch_size, *args, **kwargs)

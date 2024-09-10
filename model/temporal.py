@@ -167,6 +167,8 @@ class EndTemporalUnet(nn.Module):
         self.downs = nn.ModuleList([])
         self.ups = nn.ModuleList([])
         num_resolutions = len(in_out)
+        self.transition_dim = transition_dim
+        self.cond_dim = cond_dim
 
         print(in_out)
         for ind, (dim_in, dim_out) in enumerate(in_out):
@@ -198,11 +200,11 @@ class EndTemporalUnet(nn.Module):
 
         self.final_conv = nn.Sequential(
             Conv1dBlock(dim, dim, kernel_size=5),
-            nn.Conv1d(dim, transition_dim, 1),
+            nn.Conv1d(dim, transition_dim*cond_dim, 1),
         )
         
-        self.cond_linear=nn.Linear(cond_dim*2, transition_dim)
-
+        self.cond_linear=nn.Linear(cond_dim*2, cond_dim, bias=False)
+        print('num of parameters:', sum(p.numel() for p in self.parameters()))
 
     def forward(self, x, cond, time, returns=None):
         '''
@@ -232,11 +234,11 @@ class EndTemporalUnet(nn.Module):
             x = attn(x)
             x = upsample(x)
 
-        x = self.final_conv(x)
-
+        x = self.final_conv(x) # x: [BS, transition_dim*cond_dim, horizon]
+        # reshape to [BS, transition_dim, cond_dim, horizon]
+        x = einops.rearrange(x, 'b (t c) h -> b t c h', c=self.cond_dim)
+        x = torch.einsum('b t c h, b c -> b t h', x, self.cond_linear(cond.view(cond.shape[0],-1)))
         x = einops.rearrange(x, 'b t h -> b h t')
-        x = x*self.cond_linear(cond.view(cond.shape[0],1,-1))
-        
         return x
 
 class CondTemporalUnet(nn.Module):
@@ -399,11 +401,11 @@ class TemporalUnetInvdyn(nn.Module):
 
         self.final_conv = nn.Sequential(
             Conv1dBlock(dim, dim, kernel_size=5),
-            nn.Conv1d(dim, transition_dim, 1),
-        )
+            nn.Conv1d(dim, transition_dim-action_dim, 1),
+        ) # only predict the state transition
         # self.cond_linear=nn.Linear(cond_dim*2, transition_dim)
         
-        self.inv_dyn = ARInvModel(hidden_dim=dim, observation_dim=transition_dim, action_dim=action_dim)
+        self.inv_dyn = ARInvModel(hidden_dim=dim, observation_dim=transition_dim-action_dim, action_dim=action_dim, time_dim=time_dim)
 
     def forward(self, x_in, cond, time, returns=None):
         '''
@@ -411,7 +413,7 @@ class TemporalUnetInvdyn(nn.Module):
         '''
 
         actions = x_in[..., :self.action_dim]
-        x = x_in[..., self.action_dim:]
+        x = x_in # unet input actions and states together
         x = einops.rearrange(x, 'b h tr -> b tr h')
 
         t = self.time_mlp(time)
@@ -435,7 +437,7 @@ class TemporalUnetInvdyn(nn.Module):
             x = attn(x)
             x = upsample(x)
 
-        x = self.final_conv(x)
+        x = self.final_conv(x) # only predict the state transition
 
         x = einops.rearrange(x, 'b t h -> b h t')
         # x = x*self.cond_linear(cond.view(cond.shape[0],1,-1))
@@ -443,7 +445,7 @@ class TemporalUnetInvdyn(nn.Module):
         for i in range(x.shape[1]-1):
             comb_state = torch.cat([x[:,i,:], x[:,i+1,:]], dim=-1)
             action = actions[:,i,:]
-            actions_pred.append(self.inv_dyn(comb_state, action))
+            actions_pred.append(self.inv_dyn(comb_state, t))
         actions_pred.append(actions[:,-1,:])
         actions_pred = torch.stack(actions_pred, dim=1)
         out = torch.cat([x, actions_pred], dim=-1)
@@ -451,20 +453,91 @@ class TemporalUnetInvdyn(nn.Module):
 
 
 
+# class ARInvModel(nn.Module):
+#     def __init__(self, hidden_dim, observation_dim, action_dim, time_dim, low_act=-1.0, up_act=1.0):
+#         super(ARInvModel, self).__init__()
+#         self.observation_dim = observation_dim
+#         self.action_dim = action_dim
+
+#         self.action_embed_hid = 64
+#         self.out_lin = 64
+#         # self.num_bins = 80
+
+#         # self.up_act = up_act
+#         # self.low_act = low_act
+#         # self.bin_size = (self.up_act - self.low_act) / self.num_bins
+#         # self.ce_loss = nn.CrossEntropyLoss()
+#         self.mse_loss = nn.MSELoss()
+
+#         self.state_embed = nn.Sequential(
+#             nn.Linear(3 * self.observation_dim, hidden_dim),
+#             nn.ReLU(),
+#             nn.Linear(hidden_dim, hidden_dim),
+#             nn.ReLU(),
+#             nn.Linear(hidden_dim, hidden_dim),
+#             nn.ReLU(),
+#             nn.Linear(hidden_dim, hidden_dim),
+#         )
+
+#         self.lin_mod = nn.ModuleList([nn.Linear(i*2+1, self.out_lin) for i in range(self.action_dim)])
+#         self.act_mod = nn.ModuleList()
+
+#         for _ in range(self.action_dim):
+#             self.act_mod.append(
+#                 nn.Sequential(nn.Linear(hidden_dim + self.out_lin, self.action_embed_hid), nn.ReLU(),
+#                               nn.Linear(self.action_embed_hid, 1)))
+#         self.time_mlp = nn.Sequential(
+#             nn.Mish(),
+#             nn.Linear(time_dim, self.out_lin),
+#         )
+#     def forward(self, comb_state, actions, t):
+#         # state_inp = comb_state
+#         state1 = comb_state[..., :self.observation_dim]
+#         state2 = comb_state[..., self.observation_dim:]
+#         state_diff = state2 - state1
+#         state_inp = torch.cat([state1, state_diff, state2], dim=-1)
+#         state_d = self.state_embed(state_inp)
+#         # state_d = torch.cat([state_d, self.time_mlp(t)], dim=1) # TODO:add here?
+#         a = [actions[...,0].unsqueeze(-1)]
+#         # l_0 = torch.distributions.Categorical(logits=lp_0).sample()
+
+#         # if deterministic:
+#         #     a_0 = self.low_act + (l_0 + 0.5) * self.bin_size
+#         # else:
+#         #     a_0 = torch.distributions.Uniform(self.low_act + l_0 * self.bin_size,
+#         #                                       self.low_act + (l_0 + 1) * self.bin_size).sample()
+
+#         time_emb = self.time_mlp(t)
+#         for i in range(self.action_dim):
+#             lp_i = self.act_mod[i](torch.cat([state_d, time_emb+self.lin_mod[i](torch.cat(a, dim=-1))], dim=1)) # TODO: or add time here?
+#             # l_i = torch.distributions.Categorical(logits=lp_i).sample()
+
+#             # if deterministic:
+#             #     a_i = self.low_act + (l_i + 0.5) * self.bin_size
+#             # else:
+#             #     a_i = torch.distributions.Uniform(self.low_act + l_i * self.bin_size,
+#             #                                       self.low_act + (l_i + 1) * self.bin_size).sample()
+#             if i < self.action_dim - 1:
+#                 a.append(lp_i)
+#                 a.append(actions[...,i+1].unsqueeze(-1))
+#             else:
+#                 a.append(lp_i)
+
+
+#         out = torch.cat(a, dim=-1)
+#         return out[...,1::2]  # return only the action logits
+
+
+
 class ARInvModel(nn.Module):
-    def __init__(self, hidden_dim, observation_dim, action_dim, low_act=-1.0, up_act=1.0):
+    def __init__(self, hidden_dim, observation_dim, action_dim, time_dim):
         super(ARInvModel, self).__init__()
         self.observation_dim = observation_dim
         self.action_dim = action_dim
 
         self.action_embed_hid = 64
         self.out_lin = 64
-        # self.num_bins = 80
 
-        # self.up_act = up_act
-        # self.low_act = low_act
-        # self.bin_size = (self.up_act - self.low_act) / self.num_bins
-        # self.ce_loss = nn.CrossEntropyLoss()
         self.mse_loss = nn.MSELoss()
 
         self.state_embed = nn.Sequential(
@@ -477,22 +550,31 @@ class ARInvModel(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
         )
 
-        self.lin_mod = nn.ModuleList([nn.Linear(i*2+1, self.out_lin) for i in range(self.action_dim)])
+        self.lin_mod = nn.ModuleList([nn.Linear(i, self.out_lin) for i in range(1,self.action_dim)])
         self.act_mod = nn.ModuleList()
-
-        for _ in range( self.action_dim):
-            self.act_mod.append(
-                nn.Sequential(nn.Linear(hidden_dim + self.out_lin, self.action_embed_hid), nn.ReLU(),
+        self.act_mod.append(nn.Sequential(nn.Linear(2*hidden_dim, self.action_embed_hid), nn.ReLU(),
                               nn.Linear(self.action_embed_hid, 1)))
 
-    def forward(self, comb_state, actions):
+        for _ in range( self.action_dim-1):
+            self.act_mod.append(
+                nn.Sequential(nn.Linear(hidden_dim*2+self.out_lin, self.action_embed_hid), nn.ReLU(),
+                              nn.Linear(self.action_embed_hid, 1)))
+        self.time_mlp = nn.Sequential(
+            nn.Mish(),
+            nn.Linear(time_dim, hidden_dim),
+        )
+        
+    def forward(self, comb_state, t):
         # state_inp = comb_state
         state1 = comb_state[..., :self.observation_dim]
         state2 = comb_state[..., self.observation_dim:]
         state_diff = state2 - state1
         state_inp = torch.cat([state1, state_diff, state2], dim=-1)
-        state_d = self.state_embed(state_inp)
-        a = [actions[...,0].unsqueeze(-1)]
+        state_d = self.state_embed(state_inp) # (BS, hidden_dim)
+        time_emb = self.time_mlp(t)
+        
+        lp_0 = self.act_mod[0](torch.cat([state_d, time_emb], dim=1))
+        a = [lp_0]
         # l_0 = torch.distributions.Categorical(logits=lp_0).sample()
 
         # if deterministic:
@@ -501,9 +583,8 @@ class ARInvModel(nn.Module):
         #     a_0 = torch.distributions.Uniform(self.low_act + l_0 * self.bin_size,
         #                                       self.low_act + (l_0 + 1) * self.bin_size).sample()
 
-
-        for i in range(self.action_dim):
-            lp_i = self.act_mod[i](torch.cat([state_d, self.lin_mod[i](torch.cat(a, dim=-1))], dim=1))
+        for i in range(1, self.action_dim):
+            lp_i = self.act_mod[i](torch.cat([state_d, time_emb, self.lin_mod[i-1](torch.cat(a, dim=-1))], dim=1))
             # l_i = torch.distributions.Categorical(logits=lp_i).sample()
 
             # if deterministic:
@@ -511,30 +592,12 @@ class ARInvModel(nn.Module):
             # else:
             #     a_i = torch.distributions.Uniform(self.low_act + l_i * self.bin_size,
             #                                       self.low_act + (l_i + 1) * self.bin_size).sample()
-            if i < self.action_dim - 1:
-                a.append(lp_i)
-                a.append(actions[...,i+1].unsqueeze(-1))
-            else:
-                a.append(lp_i)
+            a.append(lp_i)
 
 
         out = torch.cat(a, dim=-1)
-        return out[...,1::2]  # return only the action logits
+        return out 
 
-    # def calc_loss(self, comb_state, action):
-    #     eps = 1e-8
-    #     action = torch.clamp(action, min=self.low_act + eps, max=self.up_act - eps)
-    #     l_action = torch.div((action - self.low_act), self.bin_size, rounding_mode='floor').long()
-    #     state_inp = comb_state
-
-    #     state_d = self.state_embed(state_inp)
-    #     loss = self.ce_loss(self.act_mod[0](state_d), l_action[:, 0])
-
-    #     for i in range(1, self.action_dim):
-    #         loss += self.ce_loss(self.act_mod[i](torch.cat([state_d, self.lin_mod[i - 1](action[:, :i])], dim=1)),
-    #                                  l_action[:, i])
-
-    #     return loss/self.action_dim
 
 class ValueFunction(nn.Module):
 

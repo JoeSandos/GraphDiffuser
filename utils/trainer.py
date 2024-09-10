@@ -331,7 +331,7 @@ class Trainer(object):
                     else:
                         n = self.env.num_observation
                         theta1 = np.mod(0 * np.pi * np.arange(n) / n, 2 * np.pi)
-                        theta2 = np.mod(4 * np.pi * np.arange(n) / n, 2 * np.pi)
+                        theta2 = np.mod(0.1 * np.pi * np.arange(n) / n, 2 * np.pi)
                         y_f = theta2[np.newaxis, np.newaxis, :]
                         y_0 = theta1[np.newaxis, np.newaxis, :]
                         
@@ -342,7 +342,11 @@ class Trainer(object):
                 else:
                     y_f = test_data[random_int][0][-1, -self.env.num_observation:].unsqueeze(0).unsqueeze(0).to(self.device) # 1, 1, p
                     y_0 = test_data[random_int][0][0, -self.env.num_observation:].unsqueeze(0).unsqueeze(0).to(self.device) # 1, 1, p
+                    # y_f = np.zeros((1, 1, self.env.num_observation)).astype(np.float32)
+                    # y_f = torch.tensor(y_f).to(self.device)
+                    # print(y_0)
                     
+
                 # planning or one-shot
                 if not resample:
                     guide = LossFunction_noparams(horizon=self.env.max_T+1, transition_dim=self.ema_model.transition_dim, observation_dim=self.ema_model.observation_dim, fn_choose=fn_choose, end_vector=y_f.squeeze())
