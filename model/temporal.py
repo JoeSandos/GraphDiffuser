@@ -406,7 +406,8 @@ class TemporalUnetInvdyn(nn.Module):
         # self.cond_linear=nn.Linear(cond_dim*2, transition_dim)
         
         self.inv_dyn = ARInvModel(hidden_dim=dim, observation_dim=transition_dim-action_dim, action_dim=action_dim, time_dim=time_dim)
-
+        #print param num
+        print('num of parameters:', sum(p.numel() for p in self.parameters()))
     def forward(self, x_in, cond, time, returns=None):
         '''
             x : [ batch x horizon x transition ]

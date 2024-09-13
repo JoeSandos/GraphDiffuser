@@ -56,13 +56,13 @@ parser.add_argument('--valid_ratio', type=float, default=0.1)
 parser.add_argument('--batch_size', type=int, default=16)
 parser.add_argument('--lr', type=float, default=1e-3)
 parser.add_argument('--train_savepath', type=str, default='./results/toy_noguide')
-parser.add_argument('--n_train_steps', type=int, default=int(9e3))
+parser.add_argument('--n_train_steps', type=int, default=int(2e4))
 parser.add_argument('--n_steps_per_epoch', type=int, default=int(1e3))
 parser.add_argument('--sw_dir', type=str, default='./runs/retrain/')
 parser.add_argument('--sw_name', type=str, default='debug11')
 parser.add_argument('--resample', type=int, default=0)
 parser.add_argument('--horizon', type=int, default=8)
-parser.add_argument('--sample_use_test', type=int, default=0)
+parser.add_argument('--sample_use_test', type=int, default=1)
 parser.add_argument('--test_ratio', type=float, default=0.2)
 parser.add_argument('--no_cond', type=int, default=0)
 parser.add_argument('--data_name', type=str, default='kuramoto_8_8_15_1000_2_sigma=1')
@@ -81,7 +81,7 @@ parser.add_argument('--regen', type=int, default=1)
 parser.add_argument('--mixup', type=int, default=0)
 parser.add_argument('--use_attn', type=int, default=0)
 parser.add_argument('--use_invdyn', type=int, default=0)
-parser.add_argument('--has_invdyn', type=int, default=0)
+parser.add_argument('--has_invdyn', type=int, default=1)
 parser.add_argument('--use_end', type=int, default=0)
 parser.add_argument('--train_conditioning', type=int, default=1)
 parser.add_argument('--use_lambda', type=int, default=0)
@@ -114,7 +114,7 @@ env = Kuramoto(sys_A, sys_B, sys_C, sys_k, T)
 if args.apply_guide:
     if args.use_invdyn:
         if args.has_invdyn:
-            model = TemporalUnetInvdyn(transition_dim=p, action_dim=m, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
+            model = TemporalUnetInvdyn(transition_dim=p, action_dim=m, cond_dim=p, dim=32, dim_mults=(1, 2, 4), attention=False)
         elif args.use_attn:
             model = CondTemporalUnet(transition_dim=p, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
         elif args.use_end:
@@ -124,7 +124,7 @@ if args.apply_guide:
     else:
     # assert not args.use_invdyn
         if args.has_invdyn:
-            model = TemporalUnetInvdyn(transition_dim=m+p, action_dim=m, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
+            model = TemporalUnetInvdyn(transition_dim=m+p, action_dim=m, cond_dim=p, dim=32, dim_mults=(1, 2, 4), attention=False)
         elif args.use_attn:
             model = CondTemporalUnet(transition_dim=m+p, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
         elif args.use_end:

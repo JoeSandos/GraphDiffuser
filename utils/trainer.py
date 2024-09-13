@@ -215,6 +215,8 @@ class Trainer(object):
             self.optimizer.step()
             self.optimizer.zero_grad()
             self.writer.add_scalar('Train/train_loss', loss, self.step)
+            for key, val in infos.items():
+                self.writer.add_scalar(f'Train/{key}', val, self.step)
             
             if self.step % self.update_ema_every == 0:
                 self.step_ema()
@@ -331,7 +333,7 @@ class Trainer(object):
                     else:
                         n = self.env.num_observation
                         theta1 = np.mod(0 * np.pi * np.arange(n) / n, 2 * np.pi)
-                        theta2 = np.mod(0.1 * np.pi * np.arange(n) / n, 2 * np.pi)
+                        theta2 = np.mod(4 * np.pi * np.arange(n) / n, 2 * np.pi)
                         y_f = theta2[np.newaxis, np.newaxis, :]
                         y_0 = theta1[np.newaxis, np.newaxis, :]
                         
@@ -364,9 +366,11 @@ class Trainer(object):
                     if not use_invdyn:
                         actions = trajectories[0, :-1, :self.ema_model.action_dim] # T, m
                         # action = actions[0, 0]
-                        observations = trajectories[0, 1:, self.ema_model.action_dim:] #  T, p
+                        # observations = trajectories[0, 1:, self.ema_model.action_dim:] #  T, p
+                        observations = trajectories[0, :, self.ema_model.action_dim:] # T+1, p
                     else:
-                        observations = trajectories[0, 1:]
+                        # observations = trajectories[0, 1:]
+                        observations = trajectories[0]
                         actions = []
                         for i in range(self.env.max_T):
                             obs_comb = torch.cat([trajectories[:, i, :], trajectories[:, i+1, :]], dim=-1)
@@ -473,8 +477,8 @@ class Trainer(object):
                     plt.close(fig)
                     # pdb.set_trace()
                     
-                assert obs_from_act.shape == observations.shape
-                mse = mse_loss(obs_from_act,observations).item()
+                assert obs_from_act.shape == observations[1:].shape
+                mse = mse_loss(obs_from_act,observations[1:]).item()
                 # print("MSE between obs produced from sampled actions and sampled obs: ", mse)
                 # assert torch.all(y_f.cpu().squeeze()==observations.cpu().squeeze()), "Error"
                 mse_final = mse_loss(obs_from_act[-1],y_f.squeeze().cpu()).item()
@@ -484,7 +488,7 @@ class Trainer(object):
                 # mse_final_target2 = mse_loss(observations[-1], y_f.cpu().squeeze(0)).item()
                 # print("MSE between final sampled obs and target final obs: ", mse_final_target2)
                 for i in range(self.env.max_T):
-                    mses[i] += mse_loss(obs_from_act[i],observations[i]).item()
+                    mses[i] += mse_loss(obs_from_act[i],observations[i+1]).item()
                     dis_to_end[i] += mse_loss(observations[i].cpu(),y_f.cpu()).item()
                     dis_to_end_from_act[i] += mse_loss(obs_from_act[i].cpu(),y_f.cpu()).item()
                     

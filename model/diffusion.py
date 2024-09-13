@@ -578,6 +578,8 @@ class GaussianDiffusionClassifierGuided(nn.Module):
 
         ## get loss coefficients and initialize objective
         loss_weights = self.get_loss_weights(action_weight, loss_discount, loss_weights)
+        if self.use_lambda:
+            loss_weights = loss_weights.unsqueeze(0).repeat(16,1,1)
         # print(loss_weights)
         self.loss_fn = Losses[loss_type](loss_weights, self.action_dim)
         self.scale = scale
@@ -845,9 +847,7 @@ class GaussianDiffusionClassifierGuided(nn.Module):
         assert noise.shape == x_recon.shape
 
         if mask is not None:
-            x_recon = x_recon * mask
-            x_start = x_start * mask
-            noise = noise * mask
+            self.loss_fn.weights = mask
         if self.predict_epsilon:
             loss, info = self.loss_fn(x_recon, noise)
         else:
