@@ -85,6 +85,7 @@ parser.add_argument('--has_invdyn', type=int, default=1)
 parser.add_argument('--use_end', type=int, default=0)
 parser.add_argument('--train_conditioning', type=int, default=1)
 parser.add_argument('--use_lambda', type=int, default=0)
+parser.add_argument('--free_guide', type=int, default=0)
 # 解析参数
 
 args = parser.parse_args()
@@ -110,9 +111,18 @@ n, m, T, N = pickle_data['meta_data']['num_nodes'], pickle_data['meta_data']['in
 p=n
 U_3d, Y_bar_3d, Y_f_3d = pickle_data['data']['U'], pickle_data['data']['Y_bar'], pickle_data['data']['Y_f']
 env = Kuramoto(sys_A, sys_B, sys_C, sys_k, T)
-
-if args.apply_guide:
+if args.free_guide:
+    if args.has_invdyn and args.use_end:
+        raise NotImplementedError
+    elif args.has_invdyn:
+        model = TemporalUnetInvdyn(transition_dim=p, action_dim=m, cond_dim=p, dim=32, dim_mults=(1, 2, 4), attention=False)
+    elif args.use_end:
+        model = EndTemporalUnet(transition_dim=p, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
+    else:
+        raise NotImplementedError
+elif args.apply_guide:
     if args.use_invdyn:
+        raise NotImplementedError
         if args.has_invdyn:
             model = TemporalUnetInvdyn(transition_dim=p, action_dim=m, cond_dim=p, dim=32, dim_mults=(1, 2, 4), attention=False)
         elif args.use_attn:
@@ -123,7 +133,9 @@ if args.apply_guide:
             model = TemporalUnet(transition_dim=p, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
     else:
     # assert not args.use_invdyn
-        if args.has_invdyn:
+        if args.has_invdyn and args.use_end:
+            model = EndTemporalUnetInvdyn(transition_dim=m+p, action_dim=m, cond_dim=p, dim=32, dim_mults=(1, 2, 4), attention=False)
+        elif args.has_invdyn:
             model = TemporalUnetInvdyn(transition_dim=m+p, action_dim=m, cond_dim=p, dim=32, dim_mults=(1, 2, 4), attention=False)
         elif args.use_attn:
             model = CondTemporalUnet(transition_dim=m+p, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
