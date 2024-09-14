@@ -7,8 +7,18 @@ from utils.trainer import Trainer
 from torch.utils.data import DataLoader
 from env.env import LinearEnv
 from model.diffusion import GaussianDiffusion, GaussianInvDynDiffusion, GaussianDiffusionClassifierGuided
-from model.temporal import TemporalUnet
+from model.temporal import *
 import copy
+import os
+def set_cpu_num(cpu_num):
+    if cpu_num <= 0: return
+    os.environ ['OMP_NUM_THREADS'] = str(cpu_num)
+    os.environ ['OPENBLAS_NUM_THREADS'] = str(cpu_num)
+    os.environ ['MKL_NUM_THREADS'] = str(cpu_num)
+    os.environ ['VECLIB_MAXIMUM_THREADS'] = str(cpu_num)
+    os.environ ['NUMEXPR_NUM_THREADS'] = str(cpu_num)
+    torch.set_num_threads(cpu_num)
+
 def set_seeds(seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -56,7 +66,6 @@ parser.add_argument('--test_ratio', type=float, default=0.2)
 parser.add_argument('--no_cond', type=int, default=0)
 parser.add_argument('--data_name', type=str, default='erdos_renyi_5_5_5_15_1000')
 parser.add_argument('--retrain_data_name', type=str, default='simple_2_1_2_7_1000_combined_0.5')
-parser.add_argument('--use_invdyn', type=int, default=0)
 parser.add_argument('--normalized', type=int, default=1)
 parser.add_argument('--pred_eps', type=int, default=0)
 parser.add_argument('--sigma', type=float, default=1)
@@ -69,11 +78,19 @@ parser.add_argument('--concat_ratio', type=float, default=0.5)
 
 parser.add_argument('--resample_num', type=int, default=200)
 parser.add_argument('--regen', type=int, default=1)
-
+parser.add_argument('--mixup', type=int, default=0)
+parser.add_argument('--use_attn', type=int, default=0)
+parser.add_argument('--use_invdyn', type=int, default=0)
+parser.add_argument('--has_invdyn', type=int, default=0)
+parser.add_argument('--use_end', type=int, default=1)
+parser.add_argument('--train_conditioning', type=int, default=1)
+parser.add_argument('--use_lambda', type=int, default=0)
+parser.add_argument('--free_guide', type=int, default=0)
 
 # 解析参数
 args = parser.parse_args()
 print(args)
+set_cpu_num(8)
 set_seeds(args.seed)
 # import mse function
 from torch.nn.functional import mse_loss, l1_loss
@@ -93,25 +110,39 @@ n, m, p, T, N = pickle_data['meta_data']['num_nodes'], pickle_data['meta_data'][
 U_3d, Y_bar_3d, Y_f_3d = pickle_data['data']['U'], pickle_data['data']['Y_bar'], pickle_data['data']['Y_f']
 env = LinearEnv(sys_A, sys_B, sys_C, adj, T)
 
+# if args.apply_guide:
+#     assert not args.use_invdyn
+#     model = TemporalUnet(transition_dim=m+p, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
+#     if not args.resample:
+#         diffusion = GaussianDiffusionClassifierGuided(model, horizon=env.max_T+1, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1.0, loss_discount=1.0, loss_weights=None, scale=args.scale)
+#     else:
+#         raise NotImplementedError
+# elif args.use_invdyn:
+#     model = TemporalUnet(transition_dim=p, cond_dim=0, dim=32, dim_mults=(1, 4, 8), attention=False)
+#     if args.resample:
+#         diffusion = GaussianInvDynDiffusion(model, horizon=args.horizon, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1.0, loss_discount=1.0, loss_weights=None)
+#     else:
+#         diffusion = GaussianInvDynDiffusion(model, horizon=env.max_T+1, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1.0, loss_discount=1.0, loss_weights=None)
+# else:
+#     model = TemporalUnet(transition_dim=m+p, cond_dim=0, dim=32, dim_mults=(1, 4, 8), attention=False)
+#     if args.resample:
+#         diffusion = GaussianDiffusion(model, horizon=args.horizon, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1.0, loss_discount=1.0, loss_weights=None)
+#     else:
+#         diffusion = GaussianDiffusion(model, horizon=env.max_T+1, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1.0, loss_discount=1.0, loss_weights=None)
 if args.apply_guide:
-    assert not args.use_invdyn
-    model = TemporalUnet(transition_dim=m+p, cond_dim=0, dim=32, dim_mults=(1, 4, 8), attention=False)
-    if not args.resample:
-        diffusion = GaussianDiffusionClassifierGuided(model, horizon=env.max_T+1, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1.0, loss_discount=1.0, loss_weights=None, scale=args.scale)
+    if args.has_invdyn and args.use_end:
+        model = EndTemporalUnetInvdyn(transition_dim=m+p, action_dim=m, cond_dim=p, dim=32, dim_mults=(1, 2, 4), attention=False)
+    elif args.has_invdyn:
+        model = TemporalUnetInvdyn(transition_dim=m+p, action_dim=m, cond_dim=p, dim=32, dim_mults=(1, 2, 4), attention=False)
+    elif args.use_attn:
+        model = CondTemporalUnet(transition_dim=m+p, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
+    elif args.use_end:
+        model = EndTemporalUnet(transition_dim=m+p, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
     else:
-        raise NotImplementedError
-elif args.use_invdyn:
-    model = TemporalUnet(transition_dim=p, cond_dim=0, dim=32, dim_mults=(1, 4, 8), attention=False)
-    if args.resample:
-        diffusion = GaussianInvDynDiffusion(model, horizon=args.horizon, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1.0, loss_discount=1.0, loss_weights=None)
-    else:
-        diffusion = GaussianInvDynDiffusion(model, horizon=env.max_T+1, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1.0, loss_discount=1.0, loss_weights=None)
-else:
-    model = TemporalUnet(transition_dim=m+p, cond_dim=0, dim=32, dim_mults=(1, 4, 8), attention=False)
-    if args.resample:
-        diffusion = GaussianDiffusion(model, horizon=args.horizon, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1.0, loss_discount=1.0, loss_weights=None)
-    else:
-        diffusion = GaussianDiffusion(model, horizon=env.max_T+1, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1.0, loss_discount=1.0, loss_weights=None)
+        model = TemporalUnet(transition_dim=m+p, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
+if not args.resample:
+    diffusion = GaussianDiffusionClassifierGuided(model, horizon=env.max_T+1, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1., loss_discount=1.0, loss_weights=None, scale=args.scale, inv_dyn=args.use_invdyn, use_lambda=args.use_lambda)
+
 diffusion = diffusion.to(device)
 # split training and testing
 
@@ -120,31 +151,32 @@ num_val = int(N*args.valid_ratio)
 num_test = int(N*args.test_ratio)
 print('num_train:', num_train, 'num_val:', num_val, 'num_test:', num_test)
 if args.resample and args.normalized:
-    train_data = TrainData_norm2(U_3d[:num_train], Y_bar_3d[:num_train], Y_f_3d[:num_train], horizon=args.horizon)
-    val_data = TrainData_norm2(U_3d[num_train:num_train+num_val], Y_bar_3d[num_train:num_train+num_val], Y_f_3d[num_train:num_train+num_val], horizon=args.horizon)
-    
+    # train_data = TrainData_norm2(U_3d[:num_train], Y_bar_3d[:num_train], Y_f_3d[:num_train], horizon=args.horizon)
+    # val_data = TrainData_norm2(U_3d[num_train:num_train+num_val], Y_bar_3d[num_train:num_train+num_val], Y_f_3d[num_train:num_train+num_val], horizon=args.horizon)
+    pass
 elif args.resample and (not args.normalized):
-    train_data = TrainData2(U_3d[:num_train], Y_bar_3d[:num_train], Y_f_3d[:num_train], horizon=args.horizon)
-    val_data = TrainData2(U_3d[num_train:num_train+num_val], Y_bar_3d[num_train:num_train+num_val], Y_f_3d[num_train:num_train+num_val], horizon=args.horizon)
-    
+    # train_data = TrainData2(U_3d[:num_train], Y_bar_3d[:num_train], Y_f_3d[:num_train], horizon=args.horizon)
+    # val_data = TrainData2(U_3d[num_train:num_train+num_val], Y_bar_3d[num_train:num_train+num_val], Y_f_3d[num_train:num_train+num_val], horizon=args.horizon)
+    pass
 elif args.normalized:
     train_data = TrainData_norm(U_3d[:num_train], Y_bar_3d[:num_train], Y_f_3d[:num_train])
     val_data = TrainData_norm(U_3d[num_train:num_train+num_val], Y_bar_3d[num_train:num_train+num_val], Y_f_3d[num_train:num_train+num_val])
     
 else:
-    train_data = TrainData(U_3d[:num_train], Y_bar_3d[:num_train], Y_f_3d[:num_train])
-    val_data = TrainData(U_3d[num_train:num_train+num_val], Y_bar_3d[num_train:num_train+num_val], Y_f_3d[num_train:num_train+num_val])
-
-if not args.sample_use_test:
+    # train_data = TrainData(U_3d[:num_train], Y_bar_3d[:num_train], Y_f_3d[:num_train])
+    # val_data = TrainData(U_3d[num_train:num_train+num_val], Y_bar_3d[num_train:num_train+num_val], Y_f_3d[num_train:num_train+num_val])
+    pass
+if args.sample_use_test:
     if args.normalized:
         test_data = TrainData_norm(U_3d[num_train+num_val:num_train+num_val+num_test], Y_bar_3d[num_train+num_val:num_train+num_val+num_test], Y_f_3d[num_train+num_val:num_train+num_val+num_test])
     else:
-        test_data = TrainData(U_3d[num_train+num_val:num_train+num_val+num_test], Y_bar_3d[num_train+num_val:num_train+num_val+num_test], Y_f_3d[num_train+num_val:num_train+num_val+num_test])
-else:
-    if args.normalized:
-        test_data = TrainData_norm(U_3d[:num_train], Y_bar_3d[:num_train], Y_f_3d[:num_train])
-    else:
-        test_data = TrainData(U_3d[:num_train], Y_bar_3d[:num_train], Y_f_3d[:num_train])
+        raise NotImplementedError
+        # test_data = TrainData(U_3d[num_train+num_val:num_train+num_val+num_test], Y_bar_3d[num_train+num_val:num_train+num_val+num_test], Y_f_3d[num_train+num_val:num_train+num_val+num_test])
+# else:
+#     if args.normalized:
+#         test_data = TrainData_norm(U_3d[:num_train], Y_bar_3d[:num_train], Y_f_3d[:num_train])
+#     else:
+#         test_data = TrainData(U_3d[:num_train], Y_bar_3d[:num_train], Y_f_3d[:num_train])
 
 # dataloader
 
@@ -164,7 +196,9 @@ trainer = Trainer(diffusion,
                   valid_data=val_data, 
                   sigma=args.sigma, 
                   apply_guidance=args.apply_guide, 
-                  guide_clean=args.guide_clean)
+                  guide_clean=args.guide_clean,
+                  kuramoto=False,
+                  mixup=args.mixup)
 
 
 if args.sample_use_test:

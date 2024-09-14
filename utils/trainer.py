@@ -11,6 +11,7 @@ from torch.nn.functional import mse_loss, mse_loss
 from tensorboardX import SummaryWriter
 from utils.distance import MMDLoss
 from model.temporal import LossFunction_noparams
+from utils.dataset import *
 import matplotlib.pyplot as plt
 from collections import namedtuple
 Batch = namedtuple('Batch', 'trajectories conditions')
@@ -333,7 +334,7 @@ class Trainer(object):
                     else:
                         n = self.env.num_observation
                         theta1 = np.mod(0 * np.pi * np.arange(n) / n, 2 * np.pi)
-                        theta2 = np.mod(  np.pi * np.arange(n) / n, 2 * np.pi)
+                        theta2 = np.mod(4 * np.pi * np.arange(n) / n, 2 * np.pi)
                         y_f = theta2[np.newaxis, np.newaxis, :]
                         y_0 = theta1[np.newaxis, np.newaxis, :]
                         
@@ -347,19 +348,26 @@ class Trainer(object):
                     # y_f = np.zeros((1, 1, self.env.num_observation)).astype(np.float32)
                     # y_f = torch.tensor(y_f).to(self.device)
                     # print(y_0)
+                    # print(y_f)
                     
-
                 # planning or one-shot
                 if not resample:
-                    guide = LossFunction_noparams(horizon=self.env.max_T+1, transition_dim=self.ema_model.transition_dim, observation_dim=self.ema_model.observation_dim, fn_choose=fn_choose, end_vector=y_f.squeeze())
-                    self.ema_model.set_guide_fn(guide)
+                    try:
+                        guide = LossFunction_noparams(horizon=self.env.max_T+1, transition_dim=self.ema_model.transition_dim, observation_dim=self.ema_model.observation_dim, fn_choose=fn_choose, end_vector=y_f.squeeze())
+                        self.ema_model.set_guide_fn(guide)
+                    except:
+                        pass
                     if not no_cond:
-                        trajectories, _, _, guidances = self.ema_model(batch_size=4, cond={0: y_0, self.env.max_T: y_f}, horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
+                        if isinstance(self.dataset, TrainData_norm_free):
+                            trajectories, _, _, guidances = self.ema_model(batch_size=4, cond={0: y_0, self.env.max_T: y_f}, denoiser_cond=torch.zeros(4,).to(self.device),horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
+                        else:  
+                            trajectories, _, _, guidances = self.ema_model(batch_size=4, cond={0: y_0, self.env.max_T: y_f}, horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
                         trajectories = trajectories[0:1]
                     else:
-                        # better to use no_cond when fn_choose uses specific_end
-                        trajectories, _, _, guidances = self.ema_model(batch_size=4, cond={0: y_0}, horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
-                        trajectories = trajectories[0:1]
+                        raise NotImplementedError
+                        # # better to use no_cond when fn_choose uses specific_end
+                        # trajectories, _, _, guidances = self.ema_model(batch_size=4, cond={0: y_0}, horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
+                        # trajectories = trajectories[0:1]
 
 
                     trajectories = trajectories.cpu()
@@ -446,7 +454,7 @@ class Trainer(object):
                         
                     observations = observations.squeeze(0)
                     actions = actions.squeeze(0)
-                if not use_invdyn:
+                if (not use_invdyn) and (guidances is not None):
                     for k,v in guidances.items():
                         if epoch<4:
                             # pdb.set_trace()

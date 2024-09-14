@@ -2,11 +2,11 @@ import numpy as np
 import torch
 import pickle
 import networkx as nx
-from utils.dataset import TrainData, TrainData2, TrainData_norm, TrainData_norm2
+from utils.dataset import *
 from utils.trainer import Trainer
 from torch.utils.data import DataLoader
 from env.env import Kuramoto
-from model.diffusion import GaussianDiffusion, GaussianInvDynDiffusion, GaussianDiffusionClassifierGuided
+from model.diffusion import *
 from model.temporal import *
 import copy
 import os
@@ -62,7 +62,7 @@ parser.add_argument('--sw_dir', type=str, default='./runs/retrain/')
 parser.add_argument('--sw_name', type=str, default='debug11')
 parser.add_argument('--resample', type=int, default=0)
 parser.add_argument('--horizon', type=int, default=8)
-parser.add_argument('--sample_use_test', type=int, default=1)
+parser.add_argument('--sample_use_test', type=int, default=0)
 parser.add_argument('--test_ratio', type=float, default=0.2)
 parser.add_argument('--no_cond', type=int, default=0)
 parser.add_argument('--data_name', type=str, default='kuramoto_8_8_15_1000_2_sigma=1')
@@ -115,13 +115,13 @@ if args.free_guide:
     if args.has_invdyn and args.use_end:
         raise NotImplementedError
     elif args.has_invdyn:
-        model = TemporalUnetInvdynFree(transition_dim=p, action_dim=m, cond_dim=p, dim=32, dim_mults=(1, 2, 4), attention=False)
+        model = TemporalUnetInvdynFree(transition_dim=m+p, action_dim=m, cond_dim=p, dim=32, dim_mults=(1, 2, 4), attention=False)
     elif args.use_end:
         raise NotImplementedError
     else:
         raise NotImplementedError
     if not args.resample:
-        diffusion = GaussianDiffusionClassifierGuided(model, horizon=env.max_T+1, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1., loss_discount=1.0, loss_weights=None, scale=args.scale, inv_dyn=args.use_invdyn, use_lambda=args.use_lambda)
+        diffusion = GaussianDiffusionClassifierFree(model, horizon=env.max_T+1, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1., loss_discount=1.0, loss_weights=None, scale=args.scale, inv_dyn=args.use_invdyn, use_lambda=args.use_lambda)
     else:
         raise NotImplementedError
 elif args.apply_guide:
@@ -144,7 +144,7 @@ elif args.apply_guide:
         elif args.use_attn:
             model = CondTemporalUnet(transition_dim=m+p, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
         elif args.use_end:
-            model = EndTemporalUnet(transition_dim=m+p, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
+            model = EndTemporalUnet2(transition_dim=m+p, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
         else:
             model = TemporalUnet(transition_dim=m+p, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
     if not args.resample:
@@ -182,26 +182,33 @@ elif args.resample and (not args.normalized):
     raise NotImplementedError
     
 elif args.normalized:
-    train_data = TrainData_norm(U_3d[:num_train], Y_bar_3d[:num_train], Y_f_3d[:num_train], kuramoto=True)
-    val_data = TrainData_norm(U_3d[num_train:num_train+num_val], Y_bar_3d[num_train:num_train+num_val], Y_f_3d[num_train:num_train+num_val], kuramoto=True)
+    if args.free_guide:
+        train_data = TrainData_norm_free(U_3d[:num_train], Y_bar_3d[:num_train], Y_f_3d[:num_train], kuramoto=True)
+        val_data = TrainData_norm_free(U_3d[num_train:num_train+num_val], Y_bar_3d[num_train:num_train+num_val], Y_f_3d[num_train:num_train+num_val], kuramoto=True)
+    else:
+        train_data = TrainData_norm(U_3d[:num_train], Y_bar_3d[:num_train], Y_f_3d[:num_train], kuramoto=True)
+        val_data = TrainData_norm(U_3d[num_train:num_train+num_val], Y_bar_3d[num_train:num_train+num_val], Y_f_3d[num_train:num_train+num_val], kuramoto=True)
     
 else:
     # train_data = TrainData(U_3d[:num_train], Y_bar_3d[:num_train], Y_f_3d[:num_train])
     # val_data = TrainData(U_3d[num_train:num_train+num_val], Y_bar_3d[num_train:num_train+num_val], Y_f_3d[num_train:num_train+num_val])
     raise NotImplementedError
 
-if not args.sample_use_test:
+if args.sample_use_test:
     if args.normalized:
-        test_data = TrainData_norm(U_3d[num_train+num_val:num_train+num_val+num_test], Y_bar_3d[num_train+num_val:num_train+num_val+num_test], Y_f_3d[num_train+num_val:num_train+num_val+num_test], kuramoto=True)
+        if args.free_guide:
+            test_data = TrainData_norm_free(U_3d[num_train+num_val:num_train+num_val+num_test], Y_bar_3d[num_train+num_val:num_train+num_val+num_test], Y_f_3d[num_train+num_val:num_train+num_val+num_test], kuramoto=True)
+        else:
+            test_data = TrainData_norm(U_3d[num_train+num_val:num_train+num_val+num_test], Y_bar_3d[num_train+num_val:num_train+num_val+num_test], Y_f_3d[num_train+num_val:num_train+num_val+num_test], kuramoto=True)
     else:
         # test_data = TrainData(U_3d[num_train+num_val:num_train+num_val+num_test], Y_bar_3d[num_train+num_val:num_train+num_val+num_test], Y_f_3d[num_train+num_val:num_train+num_val+num_test])
         raise NotImplementedError
-else:
-    if args.normalized:
-        test_data = TrainData_norm(U_3d[:num_train], Y_bar_3d[:num_train], Y_f_3d[:num_train], kuramoto=True)
-    else:
-        # test_data = TrainData(U_3d[:num_train], Y_bar_3d[:num_train], Y_f_3d[:num_train])
-        raise NotImplementedError
+# else:
+#     if args.normalized:
+#         test_data = TrainData_norm(U_3d[:num_train], Y_bar_3d[:num_train], Y_f_3d[:num_train], kuramoto=True)
+#     else:
+#         # test_data = TrainData(U_3d[:num_train], Y_bar_3d[:num_train], Y_f_3d[:num_train])
+#         raise NotImplementedError
     
 # dataloader
 

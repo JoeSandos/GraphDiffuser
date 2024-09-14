@@ -36,12 +36,12 @@ class LinearEnv(EnvBase):
         self.num_observation = C.shape[0]
         self.reset()
         self.calculate_C_0()
-    def reset(self, state=None):
-        if state is None:
+    def reset(self, start=None):
+        if start is None:
             self.x = torch.zeros(self.num_nodes).to(self.device)
         else:
-            assert len(state) == self.num_nodes, "Invalid state"
-            self.x = state
+            assert len(start) == self.num_nodes, "Invalid state"
+            self.x = start
         self.T = 0
         return torch.matmul(self.C, self.x), self.x, self.T
     
@@ -67,16 +67,19 @@ class LinearEnv(EnvBase):
     def get_state(self):
         return self.x
     
-    def from_actions_to_obs(self, actions):
+    def from_actions_to_obs(self, actions, start=None):
         assert len(actions) == self.max_T, "Invalid actions"
-        self.reset()
+        if start is not None:
+            self.reset(start)
+        else:
+            self.reset()
         observations = []
         for a in actions:
             obs, _, _ = self.step(a)
             observations.append(obs)
         return torch.stack(observations).to(self.device)
     
-    def from_actions_to_obs_direct(self, actions):
+    def from_actions_to_obs_direct(self, actions, start=None):
         """
         actions u(0), u(1), ..., u(T-1)
         """

@@ -992,13 +992,11 @@ class GaussianDiffusionClassifierFree(nn.Module):
             if self.predict_epsilon, model output is (scaled) noise;
             otherwise, model predicts x0 directly
         '''
-        if self.predict_epsilon:
-            return (
-                extract(self.sqrt_recip_alphas_cumprod, t, x_t.shape) * x_t -
-                extract(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape) * noise
-            )
-        else:
-            raise NotImplementedError
+        return (
+            extract(self.sqrt_recip_alphas_cumprod, t, x_t.shape) * x_t -
+            extract(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape) * noise
+        )
+
 
     def predict_noise_from_start(self, x_t, t, x0):
         if self.predict_epsilon:
@@ -1018,7 +1016,7 @@ class GaussianDiffusionClassifierFree(nn.Module):
         posterior_log_variance_clipped = extract(self.posterior_log_variance_clipped, t, x_t.shape)
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
 
-    def p_mean_variance(self, x, t, denoiser_cond):
+    def p_mean_variance(self, x, t, cond, denoiser_cond):
         # x_tmp = x.detach()
         # t_inp = t
         # x_model_in = x
@@ -1037,8 +1035,8 @@ class GaussianDiffusionClassifierFree(nn.Module):
         
 
         # epsilon could be epsilon or x0 itself
-        epsilon_cond = self.model(x, denoiser_cond, t, use_dropout=False)
-        epsilon_uncond = self.model(x, denoiser_cond, t, force_dropout=True)
+        epsilon_cond = self.model(x, cond, denoiser_cond, t)
+        epsilon_uncond = self.model(x, cond, denoiser_cond, t, force_dropout=True)
         if not self.predict_epsilon: # if model predicts x0 directly
             epsilon_cond = self.predict_noise_from_start(x, t, epsilon_cond)
             epsilon_uncond = self.predict_noise_from_start(x, t, epsilon_uncond)
@@ -1079,7 +1077,7 @@ class GaussianDiffusionClassifierFree(nn.Module):
     #         return guide_grad, loss_dict, loss_by_sample
     
     @torch.no_grad()
-    def p_sample(self, x, t, denoiser_cond, returns=None, apply_guidance=True, guide_clean=False, eval_final_guide_loss=True):
+    def p_sample(self, x, t, cond, denoiser_cond, returns=None, apply_guidance=True, guide_clean=False, eval_final_guide_loss=True):
         # b, *_, device = *x.shape, x.device
         # with_func = torch.no_grad
         # if apply_guidance and guide_clean:
@@ -1142,20 +1140,20 @@ class GaussianDiffusionClassifierFree(nn.Module):
         #     return x_out, None, None
         
         b, *_, device = *x.shape, x.device
-        model_mean, _, model_log_variance = self.p_mean_variance(x=x, t=t, returns=returns, denoiser_cond=denoiser_cond)
+        model_mean, _, model_log_variance, _ = self.p_mean_variance(x=x, t=t, cond=cond, denoiser_cond=denoiser_cond)
         noise = 0.5*torch.randn_like(x)
         # no noise when t == 0
         nonzero_mask = (1 - (t == 0).float()).reshape(b, *((1,) * (len(x.shape) - 1)))
-        return model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise, None, None
+        return model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise
 
     @torch.no_grad()
     def p_sample_loop(self, shape, cond, denoiser_cond, returns=None, verbose=True, return_diffusion=False, apply_guidance=True,
                     guide_clean=False, ):
-        # device = self.betas.device
+        device = self.betas.device
 
-        # batch_size = shape[0]
-        # x = torch.randn(shape, device=device)
-        # x = apply_conditioning(x, cond, self.action_dim)
+        batch_size = shape[0]
+        x = torch.randn(shape, device=device)
+        x = apply_conditioning(x, cond, self.action_dim)
 
         # diffusion = [x]
         # guide_sample = 0
@@ -1193,14 +1191,14 @@ class GaussianDiffusionClassifierFree(nn.Module):
 
         batch_size = shape[0]
         x = 0.5*torch.randn(shape, device=device)
-        x = apply_conditioning(x, cond, 0)
+        x = apply_conditioning(x, cond, self.action_dim)
 
         if return_diffusion: diffusion = [x]
 
         for i in reversed(range(0, self.n_timesteps)):
             timesteps = torch.full((batch_size,), i, device=device, dtype=torch.long)
-            x = self.p_sample(x=x, t=timesteps, denoiser_cond=denoiser_cond, returns=returns)
-            x = apply_conditioning(x, cond, 0)
+            x = self.p_sample(x=x, t=timesteps, cond=cond, denoiser_cond=denoiser_cond, returns=returns)
+            x = apply_conditioning(x, cond, self.action_dim)
 
 
             if return_diffusion: diffusion.append(x)
@@ -1258,7 +1256,7 @@ class GaussianDiffusionClassifierFree(nn.Module):
 
         return sample
 
-    def p_losses(self, x_start, cond, t, mask=None):
+    def p_losses(self, x_start, cond, denoiser_cond, t, mask=None):
         noise = torch.randn_like(x_start)
 
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
@@ -1267,7 +1265,7 @@ class GaussianDiffusionClassifierFree(nn.Module):
 
         conds = [i for i in cond.values()]
         conds = torch.stack(conds, dim=1)
-        x_recon = self.model(x_noisy, conds, t)
+        x_recon = self.model(x_noisy, conds, denoiser_cond, t)
         # if t.max()==40:
         #     pdb.set_trace()
         if self.train_conditioning:

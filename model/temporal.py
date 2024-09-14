@@ -241,6 +241,109 @@ class EndTemporalUnet(nn.Module):
         x = einops.rearrange(x, 'b t h -> b h t')
         return x
 
+class EndTemporalUnet2(nn.Module):
+
+    def __init__(
+        self,
+        transition_dim,
+        cond_dim,
+        dim=32,
+        dim_mults=(1, 2, 4, 8),
+        attention=False,
+    ):
+        super().__init__()
+
+        dims = [transition_dim, *map(lambda m: dim * m, dim_mults)]
+        in_out = list(zip(dims[:-1], dims[1:]))
+        print(f'[ models/temporal ] Channel dimensions: {in_out}')
+
+        time_dim = dim
+        self.time_mlp = nn.Sequential(
+            SinusoidalPosEmb(dim),
+            nn.Linear(dim, dim * 4),
+            nn.Mish(),
+            nn.Linear(dim * 4, dim),
+        )
+
+        self.downs = nn.ModuleList([])
+        self.ups = nn.ModuleList([])
+        num_resolutions = len(in_out)
+        self.transition_dim = transition_dim
+        self.cond_dim = cond_dim
+
+        print(in_out)
+        for ind, (dim_in, dim_out) in enumerate(in_out):
+            is_last = ind >= (num_resolutions - 1)
+
+            self.downs.append(nn.ModuleList([
+                ResidualTemporalBlock(dim_in, dim_out, embed_dim=time_dim),
+                ResidualTemporalBlock(dim_out, dim_out, embed_dim=time_dim),
+                Residual(PreNorm(dim_out, LinearAttention(dim_out))) if attention else nn.Identity(),
+                Downsample1d(dim_out) if not is_last else nn.Identity()
+            ]))
+
+
+        mid_dim = dims[-1]
+        self.mid_block1 = ResidualTemporalBlock(mid_dim, mid_dim, embed_dim=time_dim)
+        self.mid_attn = Residual(PreNorm(mid_dim, LinearAttention(mid_dim))) if attention else nn.Identity()
+        self.mid_block2 = ResidualTemporalBlock(mid_dim, mid_dim, embed_dim=time_dim)
+
+        for ind, (dim_in, dim_out) in enumerate(reversed(in_out[1:])):
+            is_last = ind >= (num_resolutions - 1)
+
+            self.ups.append(nn.ModuleList([
+                ResidualTemporalBlock(dim_out * 2, dim_in, embed_dim=time_dim),
+                ResidualTemporalBlock(dim_in, dim_in, embed_dim=time_dim),
+                Residual(PreNorm(dim_in, LinearAttention(dim_in))) if attention else nn.Identity(),
+                Upsample1d(dim_in) if not is_last else nn.Identity()
+            ]))
+
+
+        self.final_conv = nn.Sequential(
+            Conv1dBlock(dim, dim, kernel_size=5),
+            nn.Conv1d(dim, transition_dim*cond_dim, 1),
+        )
+        
+        self.cond_linear=nn.Linear(2, 1, bias=False)
+        with torch.no_grad():
+            self.cond_linear.weight.copy_(torch.tensor([[-1,1]]))
+        print('num of parameters:', sum(p.numel() for p in self.parameters()))
+
+    def forward(self, x, cond, time, returns=None):
+        '''
+            x : [ batch x horizon x transition ]
+        '''
+
+        x = einops.rearrange(x, 'b h t -> b t h')
+
+        t = self.time_mlp(time)
+        h = []
+
+        for resnet, resnet2, attn, downsample in self.downs:
+            x = resnet(x, t)
+            x = resnet2(x, t)
+            x = attn(x)
+            h.append(x)
+            x = downsample(x)
+
+        x = self.mid_block1(x, t)
+        x = self.mid_attn(x)
+        x = self.mid_block2(x, t)
+
+        for resnet, resnet2, attn, upsample in self.ups:
+            x = torch.cat((x, h.pop()), dim=1)
+            x = resnet(x, t)
+            x = resnet2(x, t)
+            x = attn(x)
+            x = upsample(x)
+
+        x = self.final_conv(x) # x: [BS, transition_dim*cond_dim, horizon]
+        # reshape to [BS, transition_dim, cond_dim, horizon]
+        x = einops.rearrange(x, 'b (t c) h -> b t c h', c=self.cond_dim)
+        x = torch.einsum('b t c h, b c -> b t h', x, self.cond_linear(cond.transpose(1,2)).squeeze(-1)) # multiplies the difference between the last and first cond
+        x = einops.rearrange(x, 'b t h -> b h t')
+        return x
+
 class CondTemporalUnet(nn.Module):
 
     def __init__(
@@ -469,14 +572,20 @@ class TemporalUnetInvdynFree(nn.Module):
         in_out = list(zip(dims[:-1], dims[1:]))
         print(f'[ models/temporal ] Channel dimensions: {in_out}')
 
-        time_dim = dim
+        time_dim = 2*dim
         self.time_mlp = nn.Sequential(
             SinusoidalPosEmb(dim),
             nn.Linear(dim, dim * 4),
             nn.Mish(),
             nn.Linear(dim * 4, dim),
         )
-
+        self.returns_mlp = nn.Sequential(
+                        nn.Linear(1, dim),
+                        nn.Mish(),
+                        nn.Linear(dim, dim * 4),
+                        nn.Mish(),
+                        nn.Linear(dim * 4, dim),
+                    )
         self.downs = nn.ModuleList([])
         self.ups = nn.ModuleList([])
         num_resolutions = len(in_out)
@@ -488,8 +597,8 @@ class TemporalUnetInvdynFree(nn.Module):
             self.downs.append(nn.ModuleList([
                 ResidualTemporalBlock(dim_in, dim_out, embed_dim=time_dim),
                 ResidualTemporalBlock(dim_out, dim_out, embed_dim=time_dim),
-                # Residual(PreNorm(dim_out, LinearAttention(dim_out))) if attention else nn.Identity(),
-                SpatialTransformer1D(channels=dim_out, n_heads=1, n_layers=1, d_cond=self.cond_dim),
+                Residual(PreNorm(dim_out, LinearAttention(dim_out))) if attention else nn.Identity(),
+                # SpatialTransformer1D(channels=dim_out, n_heads=1, n_layers=1, d_cond=self.cond_dim),
                 Downsample1d(dim_out) if not is_last else nn.Identity()
             ]))
 
@@ -497,7 +606,7 @@ class TemporalUnetInvdynFree(nn.Module):
         mid_dim = dims[-1]
         self.mid_block1 = ResidualTemporalBlock(mid_dim, mid_dim, embed_dim=time_dim)
         self.mid_attn = Residual(PreNorm(mid_dim, LinearAttention(mid_dim))) if attention else nn.Identity()
-        self.mid_attn = SpatialTransformer1D(channels=mid_dim, n_heads=1, n_layers=1, d_cond=self.cond_dim)
+        # self.mid_attn = SpatialTransformer1D(channels=mid_dim, n_heads=1, n_layers=1, d_cond=self.cond_dim)
         self.mid_block2 = ResidualTemporalBlock(mid_dim, mid_dim, embed_dim=time_dim)
 
         for ind, (dim_in, dim_out) in enumerate(reversed(in_out[1:])):
@@ -507,7 +616,7 @@ class TemporalUnetInvdynFree(nn.Module):
                 ResidualTemporalBlock(dim_out * 2, dim_in, embed_dim=time_dim),
                 ResidualTemporalBlock(dim_in, dim_in, embed_dim=time_dim),
                 Residual(PreNorm(dim_in, LinearAttention(dim_in))) if attention else nn.Identity(),
-                SpatialTransformer1D(channels=dim_in, n_heads=1, n_layers=1, d_cond=self.cond_dim),
+                # SpatialTransformer1D(channels=dim_in, n_heads=1, n_layers=1, d_cond=self.cond_dim),
                 Upsample1d(dim_in) if not is_last else nn.Identity()
             ]))
 
@@ -521,7 +630,7 @@ class TemporalUnetInvdynFree(nn.Module):
         self.inv_dyn = ARInvModel(hidden_dim=dim, observation_dim=transition_dim-action_dim, action_dim=action_dim, time_dim=time_dim)
         #print param num
         print('num of parameters:', sum(p.numel() for p in self.parameters()))
-    def forward(self, x_in, cond, time, returns=None):
+    def forward(self, x_in, cond, denoiser_cond, time, returns=None, force_dropout=False):
         '''
             x : [ batch x horizon x transition ]
         '''
@@ -532,23 +641,26 @@ class TemporalUnetInvdynFree(nn.Module):
 
         t = self.time_mlp(time)
         h = []
-
+        return_emb = self.returns_mlp(denoiser_cond.unsqueeze(-1))
+        if force_dropout:
+            return_emb = 0*return_emb
+        t = torch.cat([t, return_emb], dim=-1)
         for resnet, resnet2, attn, downsample in self.downs:
             x = resnet(x, t)
             x = resnet2(x, t)
-            x = attn(x, cond)
+            x = attn(x)
             h.append(x)
             x = downsample(x)
 
         x = self.mid_block1(x, t)
-        x = self.mid_attn(x, cond)
+        x = self.mid_attn(x)
         x = self.mid_block2(x, t)
 
         for resnet, resnet2, attn, upsample in self.ups:
             x = torch.cat((x, h.pop()), dim=1)
             x = resnet(x, t)
             x = resnet2(x, t)
-            x = attn(x, cond)
+            x = attn(x)
             x = upsample(x)
 
         x = self.final_conv(x) # only predict the state transition
@@ -560,7 +672,7 @@ class TemporalUnetInvdynFree(nn.Module):
             comb_state = torch.cat([x[:,i,:], x[:,i+1,:]], dim=-1)
             action = actions[:,i,:]
             actions_pred.append(self.inv_dyn(comb_state, t))
-        actions_pred.append(actions[:,-1,:])
+        actions_pred.append(torch.zeros_like(actions[:,-1,:]).to(actions.device))
         actions_pred = torch.stack(actions_pred, dim=1)
         out = torch.cat([actions_pred, x], dim=-1)
         return out
