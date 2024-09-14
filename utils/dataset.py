@@ -4,7 +4,7 @@ from utils.normalization import PyTorchNormalizer, LimitsNormalizer, identity_no
 from collections import namedtuple
 
 Batch = namedtuple('Batch', 'trajectories conditions')
-Batch = namedtuple('Batch', 'trajectories conditions denoiser_conditions')
+Batch2 = namedtuple('Batch', 'trajectories conditions denoiser_conditions')
 
 
 class TrainData(Dataset):
@@ -191,7 +191,7 @@ class TrainData_norm_free(Dataset):
         denoiser_cond =self.energies[index]
         # cond = {0: y[0]}
         # cond={}
-        return Batch(x, cond, denoiser_cond)
+        return Batch2(x, cond, denoiser_cond)
     
     def __len__(self):
         return self.U.shape[0]

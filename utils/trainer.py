@@ -15,6 +15,7 @@ from utils.dataset import *
 import matplotlib.pyplot as plt
 from collections import namedtuple
 Batch = namedtuple('Batch', 'trajectories conditions')
+Batch2 = namedtuple('Batch', 'trajectories conditions denoiser_conditions')
 
 test_data_global = []
 
@@ -205,7 +206,12 @@ class Trainer(object):
                         cond = {}
                         cond[0]= alpha * batch.conditions[0] + (1 - alpha) * batch2.conditions[0]
                         cond[self.dataset.horizon-1] = alpha * batch.conditions[self.dataset.horizon-1] + (1 - alpha) * batch2.conditions[self.dataset.horizon-1]
-                        batch = Batch(trajectories, cond)
+                        if isinstance(self.dataset, TrainData_norm_free):
+                            denoiser_cond = alpha * batch.denoiser_conditions + (1 - alpha) * batch2.denoiser_conditions
+                    
+                            batch = Batch2(trajectories, cond, denoiser_cond)
+                        else:
+                            batch = Batch(trajectories, cond)
                     # mixup_activate += 1
                         
                 # pdb.set_trace()
