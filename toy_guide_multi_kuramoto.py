@@ -115,9 +115,13 @@ if args.free_guide:
     if args.has_invdyn and args.use_end:
         raise NotImplementedError
     elif args.has_invdyn:
-        model = TemporalUnetInvdyn(transition_dim=p, action_dim=m, cond_dim=p, dim=32, dim_mults=(1, 2, 4), attention=False)
+        model = TemporalUnetInvdynFree(transition_dim=p, action_dim=m, cond_dim=p, dim=32, dim_mults=(1, 2, 4), attention=False)
     elif args.use_end:
-        model = EndTemporalUnet(transition_dim=p, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
+        raise NotImplementedError
+    else:
+        raise NotImplementedError
+    if not args.resample:
+        diffusion = GaussianDiffusionClassifierGuided(model, horizon=env.max_T+1, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1., loss_discount=1.0, loss_weights=None, scale=args.scale, inv_dyn=args.use_invdyn, use_lambda=args.use_lambda)
     else:
         raise NotImplementedError
 elif args.apply_guide:

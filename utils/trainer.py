@@ -333,7 +333,7 @@ class Trainer(object):
                     else:
                         n = self.env.num_observation
                         theta1 = np.mod(0 * np.pi * np.arange(n) / n, 2 * np.pi)
-                        theta2 = np.mod(4 * np.pi * np.arange(n) / n, 2 * np.pi)
+                        theta2 = np.mod(  np.pi * np.arange(n) / n, 2 * np.pi)
                         y_f = theta2[np.newaxis, np.newaxis, :]
                         y_0 = theta1[np.newaxis, np.newaxis, :]
                         
