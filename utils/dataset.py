@@ -4,7 +4,7 @@ from utils.normalization import PyTorchNormalizer, LimitsNormalizer, identity_no
 from collections import namedtuple
 
 Batch = namedtuple('Batch', 'trajectories conditions')
-Batch2 = namedtuple('Batch', 'trajectories conditions denoiser_conditions')
+Batch2 = namedtuple('Batch2', 'trajectories conditions denoiser_conditions')
 
 
 class TrainData(Dataset):

@@ -166,9 +166,10 @@ class WeightedLoss(nn.Module):
         weighted_loss = (loss * self.weights).mean()
         if self.action_dim == 0:
             a0_loss = 0
+            actions_loss = 0
         else:
             a0_loss = (loss[:, 0, :self.action_dim] ).mean()
-        actions_loss = (loss[:, :, :self.action_dim]).mean()
+            actions_loss = (loss[:, :, :self.action_dim]).mean()
         states_loss = (loss[:, :, self.action_dim:]).mean()
         return weighted_loss, {'a0_loss': a0_loss, 'actions_loss': actions_loss, 'states_loss': states_loss}
 

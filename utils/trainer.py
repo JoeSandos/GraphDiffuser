@@ -15,7 +15,7 @@ from utils.dataset import *
 import matplotlib.pyplot as plt
 from collections import namedtuple
 Batch = namedtuple('Batch', 'trajectories conditions')
-Batch2 = namedtuple('Batch', 'trajectories conditions denoiser_conditions')
+Batch2 = namedtuple('Batch2', 'trajectories conditions denoiser_conditions')
 
 test_data_global = []
 
@@ -376,7 +376,6 @@ class Trainer(object):
                         # trajectories = trajectories[0:1]
 
 
-                    trajectories = trajectories.cpu()
                     if not use_invdyn:
                         actions = trajectories[0, :-1, :self.ema_model.action_dim] # T, m
                         # action = actions[0, 0]
@@ -391,9 +390,13 @@ class Trainer(object):
                             # obs_comb = obs_comb.reshape(-1, 2*self.ema_model.observation_dim)
                             action = self.ema_model.inv_model(obs_comb)
                             actions.append(action.squeeze(0))
-                        actions = torch.stack(actions).cpu()
-                        actions_with_end = torch.cat([actions, torch.zeros(1, actions.size(-1))], dim=0)
+                        actions = torch.stack(actions)
+                        actions_with_end = torch.cat([actions, torch.zeros(1, actions.size(-1)).to(actions.device)], dim=0)
                         trajectories = torch.cat([actions_with_end.unsqueeze(0), trajectories], dim=-1)
+                    actions = actions.cpu()
+                    observations = observations.cpu()
+                    trajectories = trajectories.cpu()
+                    
                 else:
                     raise NotImplementedError
                     # cond = {0: y_0, self.ema_model.horizon-1: y_f}
@@ -468,9 +471,13 @@ class Trainer(object):
                             
                     
                 
-            # evaluate the correspondense of actions and observations
+                # evaluate the correspondense of actions and observations
                 self.env.reset()
                 obs_from_act = self.env.from_actions_to_obs_direct(actions, start = y_0)
+                obs_from_act_single = []
+                for i in range(self.env.max_T):
+                    self.env.reset(observations[i].cpu())
+                    obs_from_act_single.append(self.env.step(actions[i].cpu())[0])
                 # print("actions norm of each time step: ", torch.sum(actions**2, dim=1))
                 if self.kuramoto:
                     obs_from_act_long = self.env.from_actions_to_obs_longer(actions, start = y_0, continues=1)
@@ -502,12 +509,12 @@ class Trainer(object):
                 # mse_final_target2 = mse_loss(observations[-1], y_f.cpu().squeeze(0)).item()
                 # print("MSE between final sampled obs and target final obs: ", mse_final_target2)
                 for i in range(self.env.max_T):
-                    mses[i] += mse_loss(obs_from_act[i],observations[i+1]).item()
+                    mses[i] += mse_loss(obs_from_act_single[i],observations[i+1]).item()
                     dis_to_end[i] += mse_loss(observations[i].cpu(),y_f.cpu()).item()
                     dis_to_end_from_act[i] += mse_loss(obs_from_act[i].cpu(),y_f.cpu()).item()
                     
                 
-            # evaluate the difference between actions and model-based minumum energy control
+                # evaluate the difference between actions and model-based minumum energy control
                 u_min, y_f_hat = self.env.calculate_model_based_control(y_f.cpu().squeeze())
                 assert u_min.shape == actions.shape,f"{u_min.shape}, {actions.shape}"
                 mse_u = mse_loss(u_min, actions).item()
@@ -548,6 +555,19 @@ class Trainer(object):
                 traj_sampled = obs_from_act
                 traj_model_based = self.env.from_actions_to_obs_direct(u_min)
                 traj_data_driven = self.env.from_actions_to_obs_direct(u_min_data)
+                
+                # draw observations and obs_from_act
+                if self.step % 1000 == 0:
+                    obs_from_act_draw = torch.cat([y_0.unsqueeze(0), obs_from_act], dim=0)
+                    for dim in range(observations.shape[-1]):
+                        fig, ax = plt.subplots()
+                        ax.plot(np.arange(observations.shape[0]), observations[:, dim], label='obs')
+                        ax.plot(np.arange(observations.shape[0]), obs_from_act_draw[:, dim], label='obs_from_act')
+                        ax.legend()
+                        ax.grid()
+                        self.writer.add_figure(f'val/obs_dim_{dim}', fig, self.step)
+                        plt.close()
+                
                 if traj_sampled.shape[-1]>=2:
                     if draw_traj:
                         # draw plot to writer

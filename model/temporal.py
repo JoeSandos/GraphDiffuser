@@ -627,10 +627,12 @@ class TemporalUnetInvdynFree(nn.Module):
         ) # only predict the state transition
         # self.cond_linear=nn.Linear(cond_dim*2, transition_dim)
         
+        self.mask_dist = torch.distributions.Bernoulli(probs=1-0.25)
+        
         self.inv_dyn = ARInvModel(hidden_dim=dim, observation_dim=transition_dim-action_dim, action_dim=action_dim, time_dim=time_dim)
         #print param num
         print('num of parameters:', sum(p.numel() for p in self.parameters()))
-    def forward(self, x_in, cond, denoiser_cond, time, returns=None, force_dropout=False):
+    def forward(self, x_in, cond, denoiser_cond, time, returns=None, use_dropout=True, force_dropout=False):
         '''
             x : [ batch x horizon x transition ]
         '''
@@ -642,6 +644,9 @@ class TemporalUnetInvdynFree(nn.Module):
         t = self.time_mlp(time)
         h = []
         return_emb = self.returns_mlp(denoiser_cond.unsqueeze(-1))
+        if use_dropout:
+            mask = self.mask_dist.sample(sample_shape=(return_emb.size(0), 1)).to(return_emb.device)
+            return_emb = mask*return_emb
         if force_dropout:
             return_emb = 0*return_emb
         t = torch.cat([t, return_emb], dim=-1)
@@ -676,6 +681,538 @@ class TemporalUnetInvdynFree(nn.Module):
         actions_pred = torch.stack(actions_pred, dim=1)
         out = torch.cat([actions_pred, x], dim=-1)
         return out
+
+class EndTemporalUnetInvdynFree(nn.Module):
+
+    def __init__(
+        self,
+        transition_dim,
+        action_dim,
+        cond_dim,
+        dim=32,
+        dim_mults=(1, 2, 4, 8),
+        attention=False,
+    ):
+        super().__init__()
+        self.action_dim = action_dim
+        dims = [transition_dim, *map(lambda m: dim * m, dim_mults)]
+        in_out = list(zip(dims[:-1], dims[1:]))
+        print(f'[ models/temporal ] Channel dimensions: {in_out}')
+
+        time_dim = 2*dim
+        self.time_mlp = nn.Sequential(
+            SinusoidalPosEmb(dim),
+            nn.Linear(dim, dim * 4),
+            nn.Mish(),
+            nn.Linear(dim * 4, dim),
+        )
+        self.returns_mlp = nn.Sequential(
+                        nn.Linear(1, dim),
+                        nn.Mish(),
+                        nn.Linear(dim, dim * 4),
+                        nn.Mish(),
+                        nn.Linear(dim * 4, dim),
+                    )
+        self.downs = nn.ModuleList([])
+        self.ups = nn.ModuleList([])
+        num_resolutions = len(in_out)
+        self.cond_dim = cond_dim
+        print(in_out)
+        for ind, (dim_in, dim_out) in enumerate(in_out):
+            is_last = ind >= (num_resolutions - 1)
+
+            self.downs.append(nn.ModuleList([
+                ResidualTemporalBlock(dim_in, dim_out, embed_dim=time_dim),
+                ResidualTemporalBlock(dim_out, dim_out, embed_dim=time_dim),
+                Residual(PreNorm(dim_out, LinearAttention(dim_out))) if attention else nn.Identity(),
+                # SpatialTransformer1D(channels=dim_out, n_heads=1, n_layers=1, d_cond=self.cond_dim),
+                Downsample1d(dim_out) if not is_last else nn.Identity()
+            ]))
+
+
+        mid_dim = dims[-1]
+        self.mid_block1 = ResidualTemporalBlock(mid_dim, mid_dim, embed_dim=time_dim)
+        self.mid_attn = Residual(PreNorm(mid_dim, LinearAttention(mid_dim))) if attention else nn.Identity()
+        # self.mid_attn = SpatialTransformer1D(channels=mid_dim, n_heads=1, n_layers=1, d_cond=self.cond_dim)
+        self.mid_block2 = ResidualTemporalBlock(mid_dim, mid_dim, embed_dim=time_dim)
+
+        for ind, (dim_in, dim_out) in enumerate(reversed(in_out[1:])):
+            is_last = ind >= (num_resolutions - 1)
+
+            self.ups.append(nn.ModuleList([
+                ResidualTemporalBlock(dim_out * 2, dim_in, embed_dim=time_dim),
+                ResidualTemporalBlock(dim_in, dim_in, embed_dim=time_dim),
+                Residual(PreNorm(dim_in, LinearAttention(dim_in))) if attention else nn.Identity(),
+                # SpatialTransformer1D(channels=dim_in, n_heads=1, n_layers=1, d_cond=self.cond_dim),
+                Upsample1d(dim_in) if not is_last else nn.Identity()
+            ]))
+
+
+        self.final_conv = nn.Sequential(
+            Conv1dBlock(dim, dim, kernel_size=5),
+            nn.Conv1d(dim, transition_dim*cond_dim, 1),
+        ) # only predict the state transition
+        self.cond_linear=nn.Linear(cond_dim*2, cond_dim, bias=False)
+
+        self.mask_dist = torch.distributions.Bernoulli(probs=1-0.25)
+        
+        self.inv_dyn = ARInvModel(hidden_dim=dim, observation_dim=transition_dim-action_dim, action_dim=action_dim, time_dim=time_dim)
+        #print param num
+        print('num of parameters:', sum(p.numel() for p in self.parameters()))
+    def forward(self, x_in, cond, denoiser_cond, time, returns=None, use_dropout=True, force_dropout=False):
+        '''
+            x : [ batch x horizon x transition ]
+        '''
+
+        actions = x_in[..., :self.action_dim]
+        x = x_in # unet input actions and states together
+        x = einops.rearrange(x, 'b h tr -> b tr h')
+
+        t = self.time_mlp(time)
+        h = []
+        return_emb = self.returns_mlp(denoiser_cond.unsqueeze(-1))
+        if use_dropout:
+            mask = self.mask_dist.sample(sample_shape=(return_emb.size(0), 1)).to(return_emb.device)
+            return_emb = mask*return_emb
+        if force_dropout:
+            return_emb = 0*return_emb
+        t = torch.cat([t, return_emb], dim=-1)
+        for resnet, resnet2, attn, downsample in self.downs:
+            x = resnet(x, t)
+            x = resnet2(x, t)
+            x = attn(x)
+            h.append(x)
+            x = downsample(x)
+
+        x = self.mid_block1(x, t)
+        x = self.mid_attn(x)
+        x = self.mid_block2(x, t)
+
+        for resnet, resnet2, attn, upsample in self.ups:
+            x = torch.cat((x, h.pop()), dim=1)
+            x = resnet(x, t)
+            x = resnet2(x, t)
+            x = attn(x)
+            x = upsample(x)
+
+        x = self.final_conv(x) # only predict the state transition
+        x = einops.rearrange(x, 'b (t c) h -> b t c h', c=self.cond_dim)
+        x = torch.einsum('b t c h, b c -> b t h', x, self.cond_linear(cond.view(cond.shape[0],-1)))
+        x = einops.rearrange(x, 'b t h -> b h t')
+        x = x[..., self.action_dim:] # only predict the state transition
+        
+        actions_pred = []
+        for i in range(x.shape[1]-1):
+            comb_state = torch.cat([x[:,i,:], x[:,i+1,:]], dim=-1)
+            actions_pred.append(self.inv_dyn(comb_state, t))
+        actions_pred.append(torch.zeros_like(actions[:,-1,:]).to(actions.device))
+        actions_pred = torch.stack(actions_pred, dim=1)
+        out = torch.cat([actions_pred, x], dim=-1)
+        return out
+
+class EndTemporalUnetInvdynFreeSecond(nn.Module):
+
+    def __init__(
+        self,
+        transition_dim,
+        action_dim,
+        cond_dim,
+        dim=32,
+        dim_mults=(1, 2, 4, 8),
+        attention=False,
+    ):
+        super().__init__()
+        self.action_dim = action_dim
+        dims = [transition_dim, *map(lambda m: dim * m, dim_mults)]
+        in_out = list(zip(dims[:-1], dims[1:]))
+        print(f'[ models/temporal ] Channel dimensions: {in_out}')
+
+        time_dim = 2*dim
+        self.time_mlp = nn.Sequential(
+            SinusoidalPosEmb(dim),
+            nn.Linear(dim, dim * 4),
+            nn.Mish(),
+            nn.Linear(dim * 4, dim),
+        )
+        self.returns_mlp = nn.Sequential(
+                        nn.Linear(1, dim),
+                        nn.Mish(),
+                        nn.Linear(dim, dim * 4),
+                        nn.Mish(),
+                        nn.Linear(dim * 4, dim),
+                    )
+        self.downs = nn.ModuleList([])
+        self.ups = nn.ModuleList([])
+        num_resolutions = len(in_out)
+        self.cond_dim = cond_dim
+        print(in_out)
+        for ind, (dim_in, dim_out) in enumerate(in_out):
+            is_last = ind >= (num_resolutions - 1)
+
+            self.downs.append(nn.ModuleList([
+                ResidualTemporalBlock(dim_in, dim_out, embed_dim=time_dim),
+                ResidualTemporalBlock(dim_out, dim_out, embed_dim=time_dim),
+                Residual(PreNorm(dim_out, LinearAttention(dim_out))) if attention else nn.Identity(),
+                # SpatialTransformer1D(channels=dim_out, n_heads=1, n_layers=1, d_cond=self.cond_dim),
+                Downsample1d(dim_out) if not is_last else nn.Identity()
+            ]))
+
+
+        mid_dim = dims[-1]
+        self.mid_block1 = ResidualTemporalBlock(mid_dim, mid_dim, embed_dim=time_dim)
+        self.mid_attn = Residual(PreNorm(mid_dim, LinearAttention(mid_dim))) if attention else nn.Identity()
+        # self.mid_attn = SpatialTransformer1D(channels=mid_dim, n_heads=1, n_layers=1, d_cond=self.cond_dim)
+        self.mid_block2 = ResidualTemporalBlock(mid_dim, mid_dim, embed_dim=time_dim)
+
+        for ind, (dim_in, dim_out) in enumerate(reversed(in_out[1:])):
+            is_last = ind >= (num_resolutions - 1)
+
+            self.ups.append(nn.ModuleList([
+                ResidualTemporalBlock(dim_out * 2, dim_in, embed_dim=time_dim),
+                ResidualTemporalBlock(dim_in, dim_in, embed_dim=time_dim),
+                Residual(PreNorm(dim_in, LinearAttention(dim_in))) if attention else nn.Identity(),
+                # SpatialTransformer1D(channels=dim_in, n_heads=1, n_layers=1, d_cond=self.cond_dim),
+                Upsample1d(dim_in) if not is_last else nn.Identity()
+            ]))
+
+
+        self.final_conv = nn.Sequential(
+            Conv1dBlock(dim, dim, kernel_size=5),
+            nn.Conv1d(dim, transition_dim*cond_dim, 1),
+        ) # only predict the state transition
+        self.cond_linear=nn.Linear(cond_dim*2, cond_dim, bias=False)
+
+        # ===================second Unet=======================
+        
+        self.downs2 = nn.ModuleList([])
+        self.ups2 = nn.ModuleList([])
+        num_resolutions = len(in_out)
+        # change in_out[0]([a,b]) to [2*a,b]
+        in_out = [(2*in_out[0][0], in_out[0][1])] + in_out[1:]
+        print(in_out)
+        for ind, (dim_in, dim_out) in enumerate(in_out):
+            is_last = ind >= (num_resolutions - 1)
+
+            self.downs2.append(nn.ModuleList([
+                ResidualTemporalBlock(dim_in, dim_out, embed_dim=time_dim),
+                ResidualTemporalBlock(dim_out, dim_out, embed_dim=time_dim),
+                Residual(PreNorm(dim_out, LinearAttention(dim_out))) if attention else nn.Identity(),
+                # SpatialTransformer1D(channels=dim_out, n_heads=1, n_layers=1, d_cond=self.cond_dim),
+                Downsample1d(dim_out) if not is_last else nn.Identity()
+            ]))
+
+        mid_dim = dims[-1]
+        self.mid_block1_2 = ResidualTemporalBlock(mid_dim, mid_dim, embed_dim=time_dim)
+        self.mid_attn_2 = Residual(PreNorm(mid_dim, LinearAttention(mid_dim))) if attention else nn.Identity()
+        self.mid_block2_2 = ResidualTemporalBlock(mid_dim, mid_dim, embed_dim=time_dim)
+
+        for ind, (dim_in, dim_out) in enumerate(reversed(in_out[1:])):
+            is_last = ind >= (num_resolutions - 1)
+
+            self.ups2.append(nn.ModuleList([
+                ResidualTemporalBlock(dim_out * 2, dim_in, embed_dim=time_dim),
+                ResidualTemporalBlock(dim_in, dim_in, embed_dim=time_dim),
+                Residual(PreNorm(dim_in, LinearAttention(dim_in))) if attention else nn.Identity(),
+                # SpatialTransformer1D(channels=dim_in, n_heads=1, n_layers=1, d_cond=self.cond_dim),
+                Upsample1d(dim_in) if not is_last else nn.Identity()
+            ]))
+        
+        self.final_conv2 = nn.Sequential(
+            Conv1dBlock(dim, dim, kernel_size=5),
+            nn.Conv1d(dim, transition_dim*cond_dim*cond_dim, 1),
+        )
+        
+        self.mask_dist = torch.distributions.Bernoulli(probs=1-0.25)
+        
+        self.inv_dyn = ARInvModel(hidden_dim=dim, observation_dim=transition_dim-action_dim, action_dim=action_dim, time_dim=time_dim)
+        #print param num
+        print('num of parameters:', sum(p.numel() for p in self.parameters()))
+    def forward(self, x_in, cond, denoiser_cond, time, returns=None, force_dropout=False, use_dropout=True):
+        '''
+            x : [ batch x horizon x transition ]
+        '''
+
+        actions = x_in[..., :self.action_dim]
+        x = x_in # unet input actions and states together
+        x = einops.rearrange(x, 'b h tr -> b tr h')
+
+        t = self.time_mlp(time)
+        h = []
+        return_emb = self.returns_mlp(denoiser_cond.unsqueeze(-1))
+        if use_dropout:
+            mask = self.mask_dist.sample(sample_shape=(return_emb.size(0), 1)).to(return_emb.device)
+            return_emb = mask*return_emb
+        if force_dropout:
+            return_emb = 0*return_emb
+        t = torch.cat([t, return_emb], dim=-1)
+        
+        cond_emb = self.cond_linear(cond.view(cond.shape[0],-1))
+        
+        for resnet, resnet2, attn, downsample in self.downs:
+            x = resnet(x, t)
+            x = resnet2(x, t)
+            x = attn(x)
+            h.append(x)
+            x = downsample(x)
+
+        x = self.mid_block1(x, t)
+        x = self.mid_attn(x)
+        x = self.mid_block2(x, t)
+
+        for resnet, resnet2, attn, upsample in self.ups:
+            x = torch.cat((x, h.pop()), dim=1)
+            x = resnet(x, t)
+            x = resnet2(x, t)
+            x = attn(x)
+            x = upsample(x)
+
+        x = self.final_conv(x) 
+        x = einops.rearrange(x, 'b (t c) h -> b t c h', c=self.cond_dim)
+        x = torch.einsum('b t c h, b c -> b t h', x, cond_emb)
+        
+        x_res = x
+        x = torch.cat([x, x_in.transpose(1,2)], dim=1)
+        # ===================second Unet=======================
+        h = []
+        for resnet, resnet2, attn, downsample in self.downs2:
+            x = resnet(x, t)
+            x = resnet2(x, t)
+            x = attn(x)
+            h.append(x)
+            x = downsample(x)
+            
+        x = self.mid_block1_2(x, t)
+        x = self.mid_attn_2(x)
+        x = self.mid_block2_2(x, t)
+
+        for resnet, resnet2, attn, upsample in self.ups2:
+            x = torch.cat((x, h.pop()), dim=1)
+            x = resnet(x, t)
+            x = resnet2(x, t)
+            x = attn(x)
+            x = upsample(x)
+            
+        x = self.final_conv2(x) 
+        x = einops.rearrange(x, 'b (t c d) h -> b t c d h', c=self.cond_dim, d=self.cond_dim)
+        x = torch.einsum('b t c d h, b c -> b t d h', x, cond_emb)
+        x = torch.einsum('b t d h, b d -> b t h', x, cond_emb) # second order
+        
+        x = x + x_res # add first order
+        
+        x = einops.rearrange(x, 'b t h -> b h t')
+
+        x = x[..., self.action_dim:] # only predict the state transition
+        
+        actions_pred = []
+        for i in range(x.shape[1]-1):
+            comb_state = torch.cat([x[:,i,:], x[:,i+1,:]], dim=-1)
+            actions_pred.append(self.inv_dyn(comb_state, t))
+        actions_pred.append(torch.zeros_like(actions[:,-1,:]).to(actions.device))
+        actions_pred = torch.stack(actions_pred, dim=1)
+        out = torch.cat([actions_pred, x], dim=-1)
+        return out
+
+class EndTemporalUnetFreeSecond(nn.Module):
+
+    def __init__(
+        self,
+        transition_dim,
+        # action_dim,
+        cond_dim,
+        dim=32,
+        dim_mults=(1, 2, 4, 8),
+        attention=False,
+    ):
+        super().__init__()
+        # self.action_dim = action_dim
+        dims = [transition_dim, *map(lambda m: dim * m, dim_mults)]
+        in_out = list(zip(dims[:-1], dims[1:]))
+        print(f'[ models/temporal ] Channel dimensions: {in_out}')
+
+        time_dim = 2*dim
+        self.time_mlp = nn.Sequential(
+            SinusoidalPosEmb(dim),
+            nn.Linear(dim, dim * 4),
+            nn.Mish(),
+            nn.Linear(dim * 4, dim),
+        )
+        self.returns_mlp = nn.Sequential(
+                        nn.Linear(1, dim),
+                        nn.Mish(),
+                        nn.Linear(dim, dim * 4),
+                        nn.Mish(),
+                        nn.Linear(dim * 4, dim),
+                    )
+        self.downs = nn.ModuleList([])
+        self.ups = nn.ModuleList([])
+        num_resolutions = len(in_out)
+        self.cond_dim = cond_dim
+        print(in_out)
+        for ind, (dim_in, dim_out) in enumerate(in_out):
+            is_last = ind >= (num_resolutions - 1)
+
+            self.downs.append(nn.ModuleList([
+                ResidualTemporalBlock(dim_in, dim_out, embed_dim=time_dim),
+                ResidualTemporalBlock(dim_out, dim_out, embed_dim=time_dim),
+                Residual(PreNorm(dim_out, LinearAttention(dim_out))) if attention else nn.Identity(),
+                # SpatialTransformer1D(channels=dim_out, n_heads=1, n_layers=1, d_cond=self.cond_dim),
+                Downsample1d(dim_out) if not is_last else nn.Identity()
+            ]))
+
+
+        mid_dim = dims[-1]
+        self.mid_block1 = ResidualTemporalBlock(mid_dim, mid_dim, embed_dim=time_dim)
+        self.mid_attn = Residual(PreNorm(mid_dim, LinearAttention(mid_dim))) if attention else nn.Identity()
+        # self.mid_attn = SpatialTransformer1D(channels=mid_dim, n_heads=1, n_layers=1, d_cond=self.cond_dim)
+        self.mid_block2 = ResidualTemporalBlock(mid_dim, mid_dim, embed_dim=time_dim)
+
+        for ind, (dim_in, dim_out) in enumerate(reversed(in_out[1:])):
+            is_last = ind >= (num_resolutions - 1)
+
+            self.ups.append(nn.ModuleList([
+                ResidualTemporalBlock(dim_out * 2, dim_in, embed_dim=time_dim),
+                ResidualTemporalBlock(dim_in, dim_in, embed_dim=time_dim),
+                Residual(PreNorm(dim_in, LinearAttention(dim_in))) if attention else nn.Identity(),
+                # SpatialTransformer1D(channels=dim_in, n_heads=1, n_layers=1, d_cond=self.cond_dim),
+                Upsample1d(dim_in) if not is_last else nn.Identity()
+            ]))
+
+
+        self.final_conv = nn.Sequential(
+            Conv1dBlock(dim, dim, kernel_size=5),
+            nn.Conv1d(dim, transition_dim*cond_dim, 1),
+        ) # only predict the state transition
+        self.cond_linear=nn.Linear(cond_dim*2, cond_dim, bias=False)
+
+        # ===================second Unet=======================
+        
+        self.downs2 = nn.ModuleList([])
+        self.ups2 = nn.ModuleList([])
+        num_resolutions = len(in_out)
+        # change in_out[0]([a,b]) to [2*a,b]
+        in_out = [(2*in_out[0][0], in_out[0][1])] + in_out[1:]
+        print(in_out)
+        for ind, (dim_in, dim_out) in enumerate(in_out):
+            is_last = ind >= (num_resolutions - 1)
+
+            self.downs2.append(nn.ModuleList([
+                ResidualTemporalBlock(dim_in, dim_out, embed_dim=time_dim),
+                ResidualTemporalBlock(dim_out, dim_out, embed_dim=time_dim),
+                Residual(PreNorm(dim_out, LinearAttention(dim_out))) if attention else nn.Identity(),
+                # SpatialTransformer1D(channels=dim_out, n_heads=1, n_layers=1, d_cond=self.cond_dim),
+                Downsample1d(dim_out) if not is_last else nn.Identity()
+            ]))
+
+        mid_dim = dims[-1]
+        self.mid_block1_2 = ResidualTemporalBlock(mid_dim, mid_dim, embed_dim=time_dim)
+        self.mid_attn_2 = Residual(PreNorm(mid_dim, LinearAttention(mid_dim))) if attention else nn.Identity()
+        self.mid_block2_2 = ResidualTemporalBlock(mid_dim, mid_dim, embed_dim=time_dim)
+
+        for ind, (dim_in, dim_out) in enumerate(reversed(in_out[1:])):
+            is_last = ind >= (num_resolutions - 1)
+
+            self.ups2.append(nn.ModuleList([
+                ResidualTemporalBlock(dim_out * 2, dim_in, embed_dim=time_dim),
+                ResidualTemporalBlock(dim_in, dim_in, embed_dim=time_dim),
+                Residual(PreNorm(dim_in, LinearAttention(dim_in))) if attention else nn.Identity(),
+                # SpatialTransformer1D(channels=dim_in, n_heads=1, n_layers=1, d_cond=self.cond_dim),
+                Upsample1d(dim_in) if not is_last else nn.Identity()
+            ]))
+        
+        self.final_conv2 = nn.Sequential(
+            Conv1dBlock(dim, dim, kernel_size=5),
+            nn.Conv1d(dim, transition_dim*cond_dim*cond_dim, 1),
+        )
+        
+        self.mask_dist = torch.distributions.Bernoulli(probs=1-0.25)
+        
+        # self.inv_dyn = ARInvModel(hidden_dim=dim, observation_dim=transition_dim-action_dim, action_dim=action_dim, time_dim=time_dim)
+        #print param num
+        print('num of parameters:', sum(p.numel() for p in self.parameters()))
+    def forward(self, x_in, cond, denoiser_cond, time, returns=None, force_dropout=False, use_dropout=True):
+        '''
+            x : [ batch x horizon x transition ]
+        '''
+
+        # actions = x_in[..., :self.action_dim]
+        x = x_in # unet input actions and states together
+        x = einops.rearrange(x, 'b h tr -> b tr h')
+
+        t = self.time_mlp(time)
+        h = []
+        return_emb = self.returns_mlp(denoiser_cond.unsqueeze(-1))
+        if use_dropout:
+            mask = self.mask_dist.sample(sample_shape=(return_emb.size(0), 1)).to(return_emb.device)
+            return_emb = mask*return_emb
+        if force_dropout:
+            return_emb = 0*return_emb
+        t = torch.cat([t, return_emb], dim=-1)
+        
+        cond_emb = self.cond_linear(cond.view(cond.shape[0],-1))
+        
+        for resnet, resnet2, attn, downsample in self.downs:
+            x = resnet(x, t)
+            x = resnet2(x, t)
+            x = attn(x)
+            h.append(x)
+            x = downsample(x)
+
+        x = self.mid_block1(x, t)
+        x = self.mid_attn(x)
+        x = self.mid_block2(x, t)
+
+        for resnet, resnet2, attn, upsample in self.ups:
+            x = torch.cat((x, h.pop()), dim=1)
+            x = resnet(x, t)
+            x = resnet2(x, t)
+            x = attn(x)
+            x = upsample(x)
+
+        x = self.final_conv(x) 
+        x = einops.rearrange(x, 'b (t c) h -> b t c h', c=self.cond_dim)
+        x = torch.einsum('b t c h, b c -> b t h', x, cond_emb)
+        
+        x_res = x
+        x = torch.cat([x, x_in.transpose(1,2)], dim=1)
+        # ===================second Unet=======================
+        h = []
+        for resnet, resnet2, attn, downsample in self.downs2:
+            x = resnet(x, t)
+            x = resnet2(x, t)
+            x = attn(x)
+            h.append(x)
+            x = downsample(x)
+            
+        x = self.mid_block1_2(x, t)
+        x = self.mid_attn_2(x)
+        x = self.mid_block2_2(x, t)
+
+        for resnet, resnet2, attn, upsample in self.ups2:
+            x = torch.cat((x, h.pop()), dim=1)
+            x = resnet(x, t)
+            x = resnet2(x, t)
+            x = attn(x)
+            x = upsample(x)
+            
+        x = self.final_conv2(x) 
+        x = einops.rearrange(x, 'b (t c d) h -> b t c d h', c=self.cond_dim, d=self.cond_dim)
+        x = torch.einsum('b t c d h, b c -> b t d h', x, cond_emb)
+        x = torch.einsum('b t d h, b d -> b t h', x, cond_emb) # second order
+        
+        x = x + x_res # add first order
+        
+        x = einops.rearrange(x, 'b t h -> b h t')
+
+        # x = x[..., self.action_dim:] # only predict the state transition
+        
+        # actions_pred = []
+        # for i in range(x.shape[1]-1):
+        #     comb_state = torch.cat([x[:,i,:], x[:,i+1,:]], dim=-1)
+        #     actions_pred.append(self.inv_dyn(comb_state, t))
+        # actions_pred.append(torch.zeros_like(actions[:,-1,:]).to(actions.device))
+        # actions_pred = torch.stack(actions_pred, dim=1)
+        # out = torch.cat([actions_pred, x], dim=-1)
+        return x
 
 class EndTemporalUnetInvdyn(nn.Module):
 

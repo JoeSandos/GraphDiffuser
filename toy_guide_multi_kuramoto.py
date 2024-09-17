@@ -54,12 +54,12 @@ parser.add_argument('--seed', type=int, default=44)
 parser.add_argument('--train_ratio', type=float, default=0.2)
 parser.add_argument('--valid_ratio', type=float, default=0.1)
 parser.add_argument('--batch_size', type=int, default=16)
-parser.add_argument('--lr', type=float, default=1e-3)
+parser.add_argument('--lr', type=float, default=5e-3)
 parser.add_argument('--train_savepath', type=str, default='./results/toy_noguide')
-parser.add_argument('--n_train_steps', type=int, default=int(2e4))
+parser.add_argument('--n_train_steps', type=int, default=int(1e5))
 parser.add_argument('--n_steps_per_epoch', type=int, default=int(1e3))
 parser.add_argument('--sw_dir', type=str, default='./runs/retrain/')
-parser.add_argument('--sw_name', type=str, default='debug11')
+parser.add_argument('--sw_name', type=str, default='resample_4_scale_1_repaint_outdis')
 parser.add_argument('--resample', type=int, default=0)
 parser.add_argument('--horizon', type=int, default=8)
 parser.add_argument('--sample_use_test', type=int, default=0)
@@ -80,12 +80,14 @@ parser.add_argument('--resample_num', type=int, default=200)
 parser.add_argument('--regen', type=int, default=1)
 parser.add_argument('--mixup', type=int, default=0)
 parser.add_argument('--use_attn', type=int, default=0)
-parser.add_argument('--use_invdyn', type=int, default=0)
+parser.add_argument('--use_invdyn', type=int, default=1)
 parser.add_argument('--has_invdyn', type=int, default=1)
-parser.add_argument('--use_end', type=int, default=0)
+parser.add_argument('--use_end', type=int, default=1)
 parser.add_argument('--train_conditioning', type=int, default=1)
 parser.add_argument('--use_lambda', type=int, default=0)
-parser.add_argument('--free_guide', type=int, default=0)
+parser.add_argument('--free_guide', type=int, default=1)
+parser.add_argument('--use_end_second', type=int, default=1)
+parser.add_argument('--repaint', type=int, default=1)
 # 解析参数
 
 args = parser.parse_args()
@@ -112,16 +114,27 @@ p=n
 U_3d, Y_bar_3d, Y_f_3d = pickle_data['data']['U'], pickle_data['data']['Y_bar'], pickle_data['data']['Y_f']
 env = Kuramoto(sys_A, sys_B, sys_C, sys_k, T)
 if args.free_guide:
-    if args.has_invdyn and args.use_end:
-        raise NotImplementedError
-    elif args.has_invdyn:
-        model = TemporalUnetInvdynFree(transition_dim=m+p, action_dim=m, cond_dim=p, dim=32, dim_mults=(1, 2, 4), attention=False)
-    elif args.use_end:
-        raise NotImplementedError
+    if args.use_invdyn:
+        if args.use_end_second:
+            model = EndTemporalUnetFreeSecond(transition_dim=p, cond_dim=p, dim=32, dim_mults=(1, 2, 4), attention=False)
+        elif args.use_end:
+            raise NotImplementedError
+        else:
+            raise NotImplementedError
     else:
-        raise NotImplementedError
+        if args.has_invdyn and args.use_end_second:
+            model = EndTemporalUnetInvdynFreeSecond(transition_dim=m+p, action_dim=m, cond_dim=p, dim=32, dim_mults=(1, 2, 4), attention=False)
+        elif args.has_invdyn and args.use_end:
+            model = EndTemporalUnetInvdynFree(transition_dim=m+p, action_dim=m, cond_dim=p, dim=32, dim_mults=(1, 2, 4), attention=False)
+        elif args.has_invdyn:
+            model = TemporalUnetInvdynFree(transition_dim=m+p, action_dim=m, cond_dim=p, dim=32, dim_mults=(1, 2, 4), attention=False)
+        elif args.use_end:
+            raise NotImplementedError
+
+        else:
+            raise NotImplementedError
     if not args.resample:
-        diffusion = GaussianDiffusionClassifierFree(model, horizon=env.max_T+1, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1., loss_discount=1.0, loss_weights=None, scale=args.scale, inv_dyn=args.use_invdyn, use_lambda=args.use_lambda)
+        diffusion = GaussianDiffusionClassifierFree(model, horizon=env.max_T+1, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1., loss_discount=1.0, loss_weights=None, scale=args.scale, inv_dyn=args.use_invdyn, use_lambda=args.use_lambda, repaint=args.repaint, env=env)
     else:
         raise NotImplementedError
 elif args.apply_guide:
@@ -148,7 +161,7 @@ elif args.apply_guide:
         else:
             model = TemporalUnet(transition_dim=m+p, cond_dim=p, dim=32, dim_mults=(1, 4, 8), attention=False)
     if not args.resample:
-        diffusion = GaussianDiffusionClassifierGuided(model, horizon=env.max_T+1, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1., loss_discount=1.0, loss_weights=None, scale=args.scale, inv_dyn=args.use_invdyn, use_lambda=args.use_lambda)
+        diffusion = GaussianDiffusionClassifierGuided(model, horizon=env.max_T+1, observation_dim=p, action_dim=m, n_timesteps=64, loss_type='l2', clip_denoised=False, predict_epsilon=args.pred_eps, action_weight=1., loss_discount=1.0, loss_weights=None, scale=args.scale, inv_dyn=args.use_invdyn, use_lambda=args.use_lambda, repaint=args.repaint)
     else:
         raise NotImplementedError
 # elif args.use_invdyn:

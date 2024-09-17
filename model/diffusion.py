@@ -879,7 +879,7 @@ class GaussianDiffusionClassifierGuided(nn.Module):
                 mask = torch.ones_like(x)
             # mask last action
                 mask[:, -1, :self.real_action_dim] = 0
-                lamb=0.99
+                lamb=0.98
                 lamb_power_t = lamb**t.float() # size: [batch_size]
                 # apply to mask action:
                 mask[:, :, :self.real_action_dim] = mask[:, :, :self.real_action_dim] * lamb_power_t.unsqueeze(1).unsqueeze(2)
@@ -893,7 +893,7 @@ class GaussianDiffusionClassifierFree(nn.Module):
     def __init__(self, model, horizon, observation_dim, action_dim, n_timesteps=1000,
         loss_type='l2', clip_denoised=False, predict_epsilon=True,
         action_weight=1.0, loss_discount=1.0, loss_weights=None, scale=0.1, inv_dyn=False, 
-        train_conditioning=True, use_lambda = False
+        train_conditioning=True, use_lambda = False, repaint=False, env=None
     ):
         super().__init__()
         self.horizon = horizon
@@ -909,9 +909,10 @@ class GaussianDiffusionClassifierFree(nn.Module):
         self.model = model
         self.train_conditioning = train_conditioning
         self.use_lambda = use_lambda
-        
+        self.repaint = repaint
         if inv_dyn:
             self.inv_model = ARInvModel(hidden_dim=64, observation_dim=observation_dim, action_dim=action_dim)
+            # self.inv_model = TransformerInvModel2(hidden_dim=64, observation_dim=observation_dim, action_dim=action_dim)
         
         betas = cosine_beta_schedule(n_timesteps)
         alphas = 1. - betas
@@ -953,6 +954,8 @@ class GaussianDiffusionClassifierFree(nn.Module):
         # print(loss_weights)
         self.loss_fn = Losses[loss_type](loss_weights, self.action_dim)
         self.scale = scale
+        self.env = env
+        self.resample_num=4
 
     def get_loss_weights(self, action_weight, discount, weights_dict):
         '''
@@ -1035,7 +1038,7 @@ class GaussianDiffusionClassifierFree(nn.Module):
         
 
         # epsilon could be epsilon or x0 itself
-        epsilon_cond = self.model(x, cond, denoiser_cond, t)
+        epsilon_cond = self.model(x, cond, denoiser_cond, t, use_dropout=False)
         epsilon_uncond = self.model(x, cond, denoiser_cond, t, force_dropout=True)
         if not self.predict_epsilon: # if model predicts x0 directly
             epsilon_cond = self.predict_noise_from_start(x, t, epsilon_cond)
@@ -1153,15 +1156,17 @@ class GaussianDiffusionClassifierFree(nn.Module):
 
         batch_size = shape[0]
         x = torch.randn(shape, device=device)
-        x = apply_conditioning(x, cond, self.action_dim)
+        conds = [i for i in cond.values()]
+        conds = torch.cat(conds, dim=1)
+        conds = conds.repeat(batch_size, 1, 1)
+        if not self.repaint:
+            x = apply_conditioning(x, cond, self.action_dim)
 
         # diffusion = [x]
         # guide_sample = 0
         # steps = [i for i in reversed(range(0, self.n_timesteps))]
         # # steps = tqdm(steps)
-        # conds = [i for i in cond.values()]
-        # conds = torch.cat(conds, dim=1)
-        # conds = conds.repeat(batch_size, 1, 1)
+
         # for i in steps:
         #     timesteps = torch.full((batch_size,), i, device=device, dtype=torch.long)
         #     # TODO :fix invdyn_bug
@@ -1186,19 +1191,40 @@ class GaussianDiffusionClassifierFree(nn.Module):
         #     diffusion = torch.stack(diffusion, dim=1)
         # return Sample(x, guide_sample, diffusion, guide_rewards)
         
-        device = self.betas.device
+        # device = self.betas.device
         diffusion = [x]
 
-        batch_size = shape[0]
-        x = 0.5*torch.randn(shape, device=device)
-        x = apply_conditioning(x, cond, self.action_dim)
+        # batch_size = shape[0]
+        # x = 0.5*torch.randn(shape, device=device)
+        # x = apply_conditioning(x, cond, self.action_dim)
 
         if return_diffusion: diffusion = [x]
 
         for i in reversed(range(0, self.n_timesteps)):
             timesteps = torch.full((batch_size,), i, device=device, dtype=torch.long)
-            x = self.p_sample(x=x, t=timesteps, cond=cond, denoiser_cond=denoiser_cond, returns=returns)
-            x = apply_conditioning(x, cond, self.action_dim)
+            for j in range(self.resample_num+1):
+                x = self.p_sample(x=x, t=timesteps, cond=conds, denoiser_cond=denoiser_cond, returns=returns)
+                if not self.repaint:
+                    x = apply_conditioning(x, cond, self.action_dim)
+                else:
+                    if timesteps.max() == 0:
+                        conds_diffuse_dict = cond
+                    else:
+                        conds_diffuse = self.q_sample(x_start=conds, t=timesteps-1) #repaint
+                        conds_diffuse_dict = {}
+                        for i, c in enumerate(cond.keys()):
+                            conds_diffuse_dict[c] = conds_diffuse[:, i, :]
+                    x = apply_conditioning(x, conds_diffuse_dict, self.action_dim)
+                if self.resample_num:
+                    # diffuse back to timesteps
+                    
+                    if (timesteps.max() != 0) and (j != self.resample_num):
+                        x = self.q_sample_one_step(xt=x, t=timesteps-1)
+                    else:
+                        if timesteps.max() == 0:
+                            break
+                        continue
+
 
 
             if return_diffusion: diffusion.append(x)
@@ -1255,12 +1281,24 @@ class GaussianDiffusionClassifierFree(nn.Module):
         )
 
         return sample
+    
+    def q_sample_one_step(self, xt, t, noise=None):
+        if noise is None:
+            noise = torch.randn_like(xt)
+        
+        xt_plus_1 = (
+            torch.sqrt(1-extract(self.betas, t, xt.shape)) * xt +
+            torch.sqrt(extract(self.betas, t, xt.shape)) * noise
+        )
+        
+        return xt_plus_1
 
     def p_losses(self, x_start, cond, denoiser_cond, t, mask=None):
         noise = torch.randn_like(x_start)
 
+
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
-        if self.train_conditioning:
+        if not self.repaint:
             x_noisy = apply_conditioning(x_noisy, cond, self.action_dim)
 
         conds = [i for i in cond.values()]
@@ -1268,7 +1306,7 @@ class GaussianDiffusionClassifierFree(nn.Module):
         x_recon = self.model(x_noisy, conds, denoiser_cond, t)
         # if t.max()==40:
         #     pdb.set_trace()
-        if self.train_conditioning:
+        if not self.repaint:
             if not self.predict_epsilon:
                 x_recon = apply_conditioning(x_recon, cond, self.action_dim)
 
@@ -1297,17 +1335,17 @@ class GaussianDiffusionClassifierFree(nn.Module):
             diffuse_loss, info = self.p_losses(x[:, :, self.real_action_dim:], *args, t)
             info['diffuse_loss'] = diffuse_loss.item()
             info['inv_loss'] = inv_loss.item()
-            return (1 / 2) * (diffuse_loss + inv_loss), info
+            return (1 / 2) * (diffuse_loss + 2*inv_loss), info
         else:
             mask=None
             # mask = None
             if self.use_lambda:
                 # the type of model should be TemporalUnetInvdyn
-                assert isinstance(self.model, TemporalUnetInvdyn)
+                # assert isinstance(self.model, TemporalUnetInvdyn)
                 mask = torch.ones_like(x)
             # mask last action
                 mask[:, -1, :self.real_action_dim] = 0
-                lamb=0.99
+                lamb=0.98
                 lamb_power_t = lamb**t.float() # size: [batch_size]
                 # apply to mask action:
                 mask[:, :, :self.real_action_dim] = mask[:, :, :self.real_action_dim] * lamb_power_t.unsqueeze(1).unsqueeze(2)
@@ -1334,22 +1372,22 @@ class ARInvModel(nn.Module):
 
         self.state_embed = nn.Sequential(
             nn.Linear(3 * self.observation_dim, hidden_dim),
-            nn.ReLU(),
+            nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
+            nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
+            nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim),
         )
 
         self.lin_mod = nn.ModuleList([nn.Linear(i, self.out_lin) for i in range(1,self.action_dim)])
         self.act_mod = nn.ModuleList()
-        self.act_mod.append(nn.Sequential(nn.Linear(hidden_dim, self.action_embed_hid), nn.ReLU(),
+        self.act_mod.append(nn.Sequential(nn.Linear(hidden_dim, self.action_embed_hid), nn.SiLU(),
                               nn.Linear(self.action_embed_hid, 1)))
 
         for _ in range( self.action_dim-1):
             self.act_mod.append(
-                nn.Sequential(nn.Linear(hidden_dim + self.out_lin, self.action_embed_hid), nn.ReLU(),
+                nn.Sequential(nn.Linear(hidden_dim + self.out_lin, self.action_embed_hid), nn.SiLU(),
                               nn.Linear(self.action_embed_hid, 1)))
 
     def forward(self, comb_state):
@@ -1386,6 +1424,134 @@ class ARInvModel(nn.Module):
         out = torch.cat(a, dim=-1)
         return out 
 
+import torch
+import torch.nn as nn
+
+# class TransformerInvModel(nn.Module):
+#     def __init__(self, hidden_dim, observation_dim, action_dim):
+#         super(TransformerInvModel, self).__init__()
+#         self.observation_dim = observation_dim
+#         self.action_dim = action_dim
+
+#         self.action_embed_hid = 64
+#         self.out_lin = 64
+
+#         self.mse_loss = nn.MSELoss()
+
+#         # 状态嵌入层
+#         self.state_embed = nn.Sequential(
+#             nn.Linear(1, hidden_dim),
+#             nn.SiLU(),
+#             nn.Linear(hidden_dim, hidden_dim),
+#             nn.SiLU(),
+#             nn.Linear(hidden_dim, hidden_dim),
+#             nn.SiLU(),
+#             nn.Linear(hidden_dim, hidden_dim),
+#         )
+        
+#         # Transformer 编码器，使用 action_dim 作为多头注意力的头数
+#         self.transformer_encoder = nn.TransformerEncoder(
+#             nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=4),  # nhead=action_dim
+#             num_layers=2
+#         )
+        
+#         # 全局解码器，用于结合所有头的输出并预测动作维度
+#         self.global_decoder = nn.Sequential(
+#             nn.Linear(hidden_dim, self.action_embed_hid),
+#             nn.SiLU(),
+#             nn.Linear(self.action_embed_hid, action_dim)  # 直接输出所有 action 维度
+#         )
+
+#     def forward(self, comb_state):
+#         # 将组合状态分成 state1 和 state2
+#         state1 = comb_state[..., :self.observation_dim]
+#         state2 = comb_state[..., self.observation_dim:]
+        
+#         # 计算状态差分
+#         state_diff = state2 - state1
+        
+#         # 将状态1, 状态差分, 状态2 连接起来，形成输入
+#         state_inp = torch.cat([state1, state_diff, state2], dim=-1)
+        
+#         # 嵌入状态并增加一个维度，以匹配 Transformer 的输入格式
+#         state_d = self.state_embed(state_inp.unsqueeze(-1))  # [batch_size, seq_len, hidden_dim]
+        
+#         # 使用 Transformer 编码器进行编码，输出为 [seq_len, batch_size, hidden_dim]
+#         encoded_state = self.transformer_encoder(state_d.permute(1, 0, 2))  # [seq_len, batch_size, hidden_dim]
+#         encoded_state = encoded_state.permute(1, 0, 2)  # [batch_size, seq_len, hidden_dim]
+        
+#         # 对整个输出进行平均池化 [batch_size, hidden_dim]
+#         encoded_state = encoded_state.mean(dim=1)
+        
+#         # 全局解码器解码所有的动作维度
+#         action = self.global_decoder(encoded_state)  # [batch_size, action_dim]
+
+#         return action
+
+
+class TransformerInvModel2(nn.Module):
+    def __init__(self, hidden_dim, observation_dim, action_dim):
+        super(TransformerInvModel2, self).__init__()
+        self.observation_dim = observation_dim
+        self.action_dim = action_dim
+
+        self.action_embed_hid = 64
+        self.out_lin = 64
+
+        self.mse_loss = nn.MSELoss()
+
+        # 状态嵌入层
+        self.state_embed = nn.Sequential(
+            nn.Linear(3, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+        
+        # Transformer 编码器，使用 action_dim 作为多头注意力的头数
+        self.transformer_encoder = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=4),  # nhead=action_dim
+            num_layers=3
+        )
+        
+        self.downsampler = nn.Sequential(
+            nn.Linear(observation_dim, action_dim),)
+        
+        # 全局解码器，用于结合所有头的输出并预测动作维度
+        self.global_decoder = nn.Sequential(
+            nn.Linear(hidden_dim, self.action_embed_hid),
+            nn.SiLU(),
+            nn.Linear(self.action_embed_hid, 1)  # 直接输出所有 action 维度
+        )
+
+    def forward(self, comb_state):
+        # 将组合状态分成 state1 和 state2
+        state1 = comb_state[..., :self.observation_dim]
+        state2 = comb_state[..., self.observation_dim:]
+        
+        # 计算状态差分
+        state_diff = state2 - state1
+        
+        # 将状态1, 状态差分, 状态2 连接起来，形成输入
+        state_inp = torch.cat([state1.unsqueeze(-1), state_diff.unsqueeze(-1), state2.unsqueeze(-1)], dim=-1)
+        
+        # 嵌入状态并增加一个维度，以匹配 Transformer 的输入格式
+        state_d = self.state_embed(state_inp)  # [batch_size, observation_dim, hidden_dim]
+        
+        # 使用 Transformer 编码器进行编码，输出为 [observation_dim, batch_size, hidden_dim]
+        encoded_state = self.transformer_encoder(state_d.permute(1, 0, 2))  # [observation_dim, batch_size, hidden_dim]
+        encoded_state = encoded_state.permute(1,2,0)  # [batch_size, hidden_dim, observation_dim]
+        
+        encoded_state = self.downsampler(encoded_state) # [batch_size, hidden_dim, action_dim]
+        encoded_state = encoded_state.permute(0,2,1) # [batch_size, action_dim, hidden_dim]
+        
+        # 全局解码器解码所有的动作维度
+        action = self.global_decoder(encoded_state).squeeze(-1)  # [batch_size, action_dim]
+
+        return action
     # def calc_loss(self, comb_state, action):
     #     eps = 1e-8
     #     action = torch.clamp(action, min=self.low_act + eps, max=self.up_act - eps)
