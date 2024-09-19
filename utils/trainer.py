@@ -68,10 +68,10 @@ class Trainer(object):
         gradient_accumulate_every=1,
         step_start_ema=2000,
         update_ema_every=10,
-        log_freq=200,
-        sample_freq=200,
+        log_freq=400,
+        sample_freq=1000,
         save_freq=1000,
-        label_freq=100000,
+        label_freq=2000,
         results_folder='./results',
         n_reference=8,
         n_samples=16,
@@ -780,7 +780,7 @@ class Trainer(object):
                     
             # evaluate the correspondense of actions and observations
                 self.env.reset()
-                obs_from_act = self.env.from_actions_to_obs_direct(actions)
+                obs_from_act = self.env.from_actions_to_obs_direct(actions, start=y_0)
                 assert obs_from_act.shape == observations.shape, f'{obs_from_act.shape} and {observations.shape}'
                 mse = mse_loss(obs_from_act,observations).item()
                 # print("MSE between obs produced from sampled actions and sampled obs: ", mse)
@@ -1209,8 +1209,11 @@ class Trainer(object):
             
                 # planning or one-shot
                 if self.apply_guidance:
-                    guide = LossFunction_noparams(horizon=self.env.max_T+1, transition_dim=self.ema_model.transition_dim, observation_dim=self.ema_model.observation_dim, fn_choose=fn_choose, end_vector=y_f.squeeze())
-                    self.ema_model.set_guide_fn(guide)
+                    try:
+                        guide = LossFunction_noparams(horizon=self.env.max_T+1, transition_dim=self.ema_model.transition_dim, observation_dim=self.ema_model.observation_dim, fn_choose=fn_choose, end_vector=y_f.squeeze())
+                        self.ema_model.set_guide_fn(guide)
+                    except:
+                        pass
                 trajectories, _, _, guidances = self.ema_model(batch_size=4, cond={0: y_0, self.env.max_T: y_f}, horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
                 trajectories = trajectories[0:1]
                 
@@ -1232,10 +1235,10 @@ class Trainer(object):
                         y_0 = self.dataset.normalizer['Y'].unnormalize(y_0.cpu()).squeeze(0).squeeze(0)
                 
                 obs_from_act = self.env.from_actions_to_obs_direct(actions, start=y_0)
-                if mse_loss(obs_from_act[-1].squeeze(),y_f.squeeze()) >0.5:
-                    continue
+                # if mse_loss(obs_from_act[-1].squeeze(),y_f.squeeze()) >0.5:
+                #     continue
 
-                U_s.append(actions.flip(0))
+                U_s.append(actions)
                 Y_s.append(observations)
                 num+=1
         print(len(U_s))        

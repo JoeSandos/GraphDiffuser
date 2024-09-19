@@ -55,14 +55,13 @@ parser.add_argument('--train_ratio', type=float, default=0.2)
 parser.add_argument('--valid_ratio', type=float, default=0.1)
 parser.add_argument('--batch_size', type=int, default=16)
 parser.add_argument('--lr', type=float, default=5e-3)
-parser.add_argument('--train_savepath', type=str, default='./results/toy_noguide')
+parser.add_argument('--train_savepath', type=str, default='./results/toy_noguide/')
 parser.add_argument('--n_train_steps', type=int, default=int(1e5))
 parser.add_argument('--n_steps_per_epoch', type=int, default=int(1e3))
 parser.add_argument('--sw_dir', type=str, default='./runs/retrain/')
-parser.add_argument('--sw_name', type=str, default='resample_4_scale_1_repaint_outdis')
+parser.add_argument('--sw_name', type=str, default='resample_4_scale_1_repaint_ind')
 parser.add_argument('--resample', type=int, default=0)
 parser.add_argument('--horizon', type=int, default=8)
-parser.add_argument('--sample_use_test', type=int, default=0)
 parser.add_argument('--test_ratio', type=float, default=0.2)
 parser.add_argument('--no_cond', type=int, default=0)
 parser.add_argument('--data_name', type=str, default='kuramoto_8_8_15_1000_2_sigma=1')
@@ -88,6 +87,8 @@ parser.add_argument('--use_lambda', type=int, default=0)
 parser.add_argument('--free_guide', type=int, default=1)
 parser.add_argument('--use_end_second', type=int, default=1)
 parser.add_argument('--repaint', type=int, default=1)
+parser.add_argument('--sample_use_test', type=int, default=1)
+
 # 解析参数
 
 args = parser.parse_args()
@@ -210,9 +211,9 @@ else:
 if args.sample_use_test:
     if args.normalized:
         if args.free_guide:
-            test_data = TrainData_norm_free(U_3d[num_train+num_val:num_train+num_val+num_test], Y_bar_3d[num_train+num_val:num_train+num_val+num_test], Y_f_3d[num_train+num_val:num_train+num_val+num_test], kuramoto=True)
+            test_data = TrainData_norm_free(U_3d[:-num_test], Y_bar_3d[:-num_test], Y_f_3d[:-num_test], kuramoto=True)
         else:
-            test_data = TrainData_norm(U_3d[num_train+num_val:num_train+num_val+num_test], Y_bar_3d[num_train+num_val:num_train+num_val+num_test], Y_f_3d[num_train+num_val:num_train+num_val+num_test], kuramoto=True)
+            test_data = TrainData_norm(U_3d[:-num_test], Y_bar_3d[:-num_test], Y_f_3d[:-num_test], kuramoto=True)
     else:
         # test_data = TrainData(U_3d[num_train+num_val:num_train+num_val+num_test], Y_bar_3d[num_train+num_val:num_train+num_val+num_test], Y_f_3d[num_train+num_val:num_train+num_val+num_test])
         raise NotImplementedError
