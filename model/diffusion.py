@@ -1049,7 +1049,49 @@ class GaussianDiffusionClassifierFree(nn.Module):
 
         t = t.detach().to(torch.int64)
         x_recon = self.predict_start_from_noise(x, t=t, noise=epsilon)
-
+        try:
+            if t.squeeze().item()==0:
+                import matplotlib.pyplot as plt
+                diffs_fn = lambda tensor: torch.mean(torch.norm((tensor[:, 1:] - tensor[:, :-1]) - (tensor[:, -1:] - tensor[:, 0:1]) / (tensor.shape[1] - 1)))
+                diffs = []
+                for i in range(40):
+                    x_recon_cond = self.model(x, cond, i*0.1*torch.ones_like(denoiser_cond)-1, t, use_dropout=False)
+                    diff = diffs_fn(x_recon_cond).cpu().numpy()
+                    diffs.append(diff)
+                plt.subplot()
+                plt.plot(np.linspace(-1, 2.9, len(diffs)),np.array(diffs))
+                min_val = min(diffs)
+                min_idx = diffs.index(min_val)
+                min_x = np.linspace(-1, 2.9, len(diffs))[min_idx]
+                plt.plot(min_x, min_val.item(), 'ro', label=f'Min value at {min_x.item():.4f}: {min_val.item():.4f}')
+                plt.legend()
+                plt.title(f'sweep cond in denoising step = {t.squeeze().item()}')
+                plt.savefig(f'01_t={t.squeeze().item()}_sweep_cond.png')
+                plt.clf()
+                
+                diffs = []
+                epsilon_cond = self.model(x, cond, torch.ones_like(denoiser_cond), t, use_dropout=False)
+                epsilon_uncond = self.model(x, cond, denoiser_cond, t, force_dropout=True)
+                if not self.predict_epsilon: # if model predicts x0 directly
+                    epsilon_cond = self.predict_noise_from_start(x, t, epsilon_cond)
+                    epsilon_uncond = self.predict_noise_from_start(x, t, epsilon_uncond)
+                for i in range(50):
+                    epsilon = epsilon_uncond + (0.1*i-1)*(epsilon_cond - epsilon_uncond) #COMM: add guidance
+                    x_recon2 = self.predict_start_from_noise(x, t=t, noise=epsilon)
+                    diff = diffs_fn(x_recon2).cpu().numpy()
+                    diffs.append(diff)
+                plt.subplot()
+                plt.plot(np.linspace(-1, 3.9, len(diffs)),np.array(diffs))
+                min_val = min(diffs)
+                min_idx = diffs.index(min_val)
+                min_x = np.linspace(-1, 3.9, len(diffs))[min_idx]
+                plt.plot(min_x, min_val.item(), 'ro', label=f'Min value at {min_x.item():.4f}: {min_val.item():.4f}')
+                plt.legend()
+                plt.title(f"sweep gamma in denoising step = {t.squeeze().item()}")
+                plt.savefig(f'01_t={t.squeeze().item()}_sweep_gamma.png')
+                plt.clf()
+        except:
+            pass
         if self.clip_denoised:
             x_recon.clamp_(-1., 1.)
         else:
@@ -1143,11 +1185,12 @@ class GaussianDiffusionClassifierFree(nn.Module):
         #     return x_out, None, None
         
         b, *_, device = *x.shape, x.device
-        model_mean, _, model_log_variance, _ = self.p_mean_variance(x=x, t=t, cond=cond, denoiser_cond=denoiser_cond)
-        noise = 0.5*torch.randn_like(x)
+        model_mean, _, model_log_variance, x_recon = self.p_mean_variance(x=x, t=t, cond=cond, denoiser_cond=denoiser_cond)
+        # noise = 0.5*torch.randn_like(x)
+        noise = torch.randn_like(x)
         # no noise when t == 0
         nonzero_mask = (1 - (t == 0).float()).reshape(b, *((1,) * (len(x.shape) - 1)))
-        return model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise
+        return model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise, x_recon[0]
 
     @torch.no_grad()
     def p_sample_loop(self, shape, cond, denoiser_cond, returns=None, verbose=True, return_diffusion=False, apply_guidance=True,
@@ -1158,7 +1201,8 @@ class GaussianDiffusionClassifierFree(nn.Module):
         x = torch.randn(shape, device=device)
         conds = [i for i in cond.values()]
         conds = torch.cat(conds, dim=1)
-        conds = conds.repeat(batch_size, 1, 1)
+        if conds.shape[0]==1:
+            conds = conds.repeat(batch_size, 1, 1)
         if not self.repaint:
             x = apply_conditioning(x, cond, self.action_dim)
 
@@ -1197,24 +1241,35 @@ class GaussianDiffusionClassifierFree(nn.Module):
         # batch_size = shape[0]
         # x = 0.5*torch.randn(shape, device=device)
         # x = apply_conditioning(x, cond, self.action_dim)
-
         if return_diffusion: diffusion = [x]
-
+        diff_fn = lambda tensor:torch.mean(torch.norm((tensor[:, 1:] - tensor[:, :-1]) - (tensor[:,-1:]-tensor[:,0:1])/(tensor.shape[1]-1)))
+        diff_t = []
+        diff_t_after = []
         for i in reversed(range(0, self.n_timesteps)):
             timesteps = torch.full((batch_size,), i, device=device, dtype=torch.long)
+            if i == 0:
+                if i == 0:
+                    pass
             for j in range(self.resample_num+1):
-                x = self.p_sample(x=x, t=timesteps, cond=conds, denoiser_cond=denoiser_cond, returns=returns)
+                x, mean = self.p_sample(x=x, t=timesteps, cond=conds, denoiser_cond=denoiser_cond, returns=returns)
+                if j==self.resample_num or i==0:
+                    diff_t.append(diff_fn(mean).cpu().item())
                 if not self.repaint:
                     x = apply_conditioning(x, cond, self.action_dim)
                 else:
                     if timesteps.max() == 0:
                         conds_diffuse_dict = cond
+                        for key,values in conds_diffuse_dict.items():
+                            if values.dim()==3:
+                                conds_diffuse_dict[key]=values.squeeze(1)
                     else:
                         conds_diffuse = self.q_sample(x_start=conds, t=timesteps-1) #repaint
                         conds_diffuse_dict = {}
                         for i, c in enumerate(cond.keys()):
                             conds_diffuse_dict[c] = conds_diffuse[:, i, :]
                     x = apply_conditioning(x, conds_diffuse_dict, self.action_dim)
+                if j==self.resample_num or i==0:
+                    diff_t_after.append(diff_fn(x).cpu().item())
                 if self.resample_num:
                     # diffuse back to timesteps
                     
@@ -1228,8 +1283,28 @@ class GaussianDiffusionClassifierFree(nn.Module):
 
 
             if return_diffusion: diffusion.append(x)
-
-
+        try:
+            import matplotlib.pyplot as plt
+            plt.clf()
+            plt.subplot()
+            plt.plot(np.array(list(reversed(range(0, self.n_timesteps)))), diff_t,label='x_hat_0')
+            plt.plot(np.array(list(reversed(range(0, self.n_timesteps)))), diff_t_after,label='x_t-1')
+            min_val = min(diff_t)
+            min_idx = diff_t.index(min_val)
+            min_val2 = min(diff_t_after)
+            min_idx2 = diff_t_after.index(min_val2)
+            plt.plot(np.array(list(reversed(range(0, self.n_timesteps))))[min_idx],min_val,'bo',label=f'min point for x_hat_0s:{min_val}')
+            
+            plt.plot(np.array(list(reversed(range(0, self.n_timesteps))))[min_idx2],min_val2,'ro',label=f'min point for x_t-1:{min_val2}')
+            plt.title(f'at cond {denoiser_cond.squeeze().item()}')
+            plt.grid()
+            plt.gca().invert_xaxis()
+            plt.legend()
+            plt.savefig(f'cond={denoiser_cond.squeeze().item()}.png')
+            plt.clf()
+        except:
+            pass
+        
         if return_diffusion:
             diffusion = torch.stack(diffusion, dim=1)
             
@@ -1332,7 +1407,13 @@ class GaussianDiffusionClassifierFree(nn.Module):
             x_comb_t = x_comb_t.reshape(-1, 2 * self.observation_dim)
             a_t = a_t.reshape(-1, self.real_action_dim)
             inv_loss = torch.functional.F.mse_loss(self.inv_model(x_comb_t), a_t)
-            diffuse_loss, info = self.p_losses(x[:, :, self.real_action_dim:], *args, t)
+            
+            mask = torch.ones_like(x[:, :, self.real_action_dim:]).to(x.device)
+            if self.use_lambda:
+                if args[1].ndim==1 or args[1].shape[-1]==1:
+                    mask = mask * torch.exp(0.5*(args[1].reshape(-1, *([1]*(x.ndim-args[1].ndim)))-1))
+            
+            diffuse_loss, info = self.p_losses(x[:, :, self.real_action_dim:], *args, t, mask=mask)
             info['diffuse_loss'] = diffuse_loss.item()
             info['inv_loss'] = inv_loss.item()
             return (1 / 2) * (diffuse_loss + 2*inv_loss), info

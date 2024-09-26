@@ -241,12 +241,13 @@ class Trainer(object):
                 self.scheduler.step(loss)
                 
             self.step += 1
-        if self.apply_guidance:
-            self.sample_guided(self.n_samples,self.resample, test_data, no_cond, draw_traj=True, use_invdyn=self.use_invdyn)
-        # elif self.use_invdyn:
-        #     self.sample_invdyn(self.n_samples,self.resample, test_data, no_cond, draw_traj=True)
-        else:
-            self.sample(self.n_samples,self.resample, test_data, no_cond, draw_traj=True)
+        # if self.apply_guidance:
+        #     self.sample_guided(self.n_samples,self.resample, test_data, no_cond, draw_traj=True, use_invdyn=self.use_invdyn)
+        # # elif self.use_invdyn:
+        # #     self.sample_invdyn(self.n_samples,self.resample, test_data, no_cond, draw_traj=True)
+        # else:
+        #     pass
+            # self.sample(self.n_samples,self.resample, test_data, no_cond, draw_traj=True)
         
     def valid(self):
         self.model.eval()
@@ -320,13 +321,14 @@ class Trainer(object):
         energy_u_total = 0
         energy_u_data_total = 0
         energy_u_data_appr_total = 0
-        energy_actions_total = 0
+        energy_actions_total = []
         mses = torch.zeros(self.env.max_T)
         dis_to_end = torch.zeros(self.env.max_T)
         dis_to_end_from_act = torch.zeros(self.env.max_T)
         # pdb.set_trace()
         
         traj_tensors = []
+        search_cond = False
         for epoch in range(sample_num):
             if test_data:
                 random_int = np.random.randint(0, len(test_data))
@@ -339,8 +341,8 @@ class Trainer(object):
                         y_0 = np.zeros((1, 1, self.env.num_observation))
                     else:
                         n = self.env.num_observation
-                        theta1 = np.mod(0 * np.pi * np.arange(n) / n, 2 * np.pi)
-                        theta2 = np.mod(4 * np.pi * np.arange(n) / n, 2 * np.pi)
+                        theta1 = np.mod(4 * np.pi * np.arange(1,n+1) / n-1e-6, 2 * np.pi)
+                        theta2 = np.mod(2 * np.pi * np.arange(1,n+1) / n-1e-6, 2 * np.pi)
                         y_f = theta2[np.newaxis, np.newaxis, :]
                         y_0 = theta1[np.newaxis, np.newaxis, :]
                         
@@ -364,10 +366,13 @@ class Trainer(object):
                     except:
                         pass
                     if not no_cond:
+                        batch_size = 1
                         if isinstance(self.dataset, TrainData_norm_free):
-                            trajectories, _, _, guidances = self.ema_model(batch_size=4, cond={0: y_0, self.env.max_T: y_f}, denoiser_cond=torch.zeros(4,).to(self.device),horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
+                            trajectories, _, _, guidances = self.ema_model(batch_size=batch_size, cond={0: y_0, self.env.max_T: y_f}, denoiser_cond=torch.ones(batch_size,self.ema_model.model.denoiser_cond_dim).to(self.device),horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
                         else:  
-                            trajectories, _, _, guidances = self.ema_model(batch_size=4, cond={0: y_0, self.env.max_T: y_f}, horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
+                            trajectories, _, _, guidances = self.ema_model(batch_size=batch_size, cond={0: y_0, self.env.max_T: y_f}, horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
+                        
+                        
                         trajectories = trajectories[0:1]
                     else:
                         raise NotImplementedError
@@ -396,7 +401,32 @@ class Trainer(object):
                     actions = actions.cpu()
                     observations = observations.cpu()
                     trajectories = trajectories.cpu()
-                    
+                
+                    if search_cond:
+                        for i in range(5):
+                            denoiser_cond = i/3*torch.ones(batch_size,self.ema_model.model.denoiser_cond_dim).to(self.device)
+                            trajectories_search, _, _, guidances_search = self.ema_model(batch_size=batch_size, cond={0: y_0, self.env.max_T: y_f}, denoiser_cond=denoiser_cond, horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
+                            observations_search = trajectories_search[0]
+                            actions_search = []
+                            for j in range(self.env.max_T):
+                                obs_comb = torch.cat([trajectories_search[:, j, :], trajectories_search[:, j+1, :]], dim=-1)
+                                action = self.ema_model.inv_model(obs_comb)
+                                actions_search.append(action.squeeze(0))
+                            actions_search = torch.stack(actions_search)
+                            actions_with_end_search = torch.cat([actions_search, torch.zeros(1, actions_search.size(-1)).to(actions_search.device)], dim=0)
+                            trajectories_search = torch.cat([actions_with_end_search.unsqueeze(0), trajectories_search], dim=-1)
+                            diff = torch.mean(torch.norm((trajectories_search[:, 1:] - trajectories_search[:, :-1]) - (trajectories_search[:,-1:]-trajectories_search[:,0:1])/(trajectories_search.shape[1]-1)))
+                            actions_search = actions_search.cpu()
+                            self.writer.add_scalar(f'energy_search/{i}', torch.norm(actions_search, p=2), self.step)
+                            self.writer.add_scalar(f'energy_search/diff_{i}', diff.squeeze().item(), self.step)
+                            self.writer.add_scalar(f'energy_search/curve', torch.norm(actions_search, p=2), i/3)
+                            self.writer.add_scalar(f'energy_search/curve_diff', diff.squeeze().item(), i/3)
+
+                        # self.writer.add_scalar(f'energy_search/{5}', torch.norm(actions, p=2), self.step)
+                        # self.writer.add_scalar(f'energy_search/curve', torch.norm(actions, p=2), 5)
+                        search_cond = False
+                
+                 
                 else:
                     raise NotImplementedError
                     # cond = {0: y_0, self.ema_model.horizon-1: y_f}
@@ -479,8 +509,11 @@ class Trainer(object):
                     self.env.reset(observations[i].cpu())
                     obs_from_act_single.append(self.env.step(actions[i].cpu())[0])
                 # print("actions norm of each time step: ", torch.sum(actions**2, dim=1))
-                if self.kuramoto:
-                    obs_from_act_long = self.env.from_actions_to_obs_longer(actions, start = y_0, continues=1)
+                if self.kuramoto and (test_data is None):
+                    obs_from_act_long_max = self.env.from_actions_to_obs_longer(actions, start = y_0, continues=100)
+                    pre_time = obs_from_act.shape[0]
+                    obs_from_act_long = obs_from_act_long_max[:5*pre_time]
+                    obs_from_act_long = torch.cat([y_0.squeeze().unsqueeze(0).repeat(pre_time,1), obs_from_act_long],dim=0)
                     # plot obs_from_act_long
                     # obs_from_act_long = obs_from_act_long.cpu() # T, p
                     fig, ax = plt.subplots()
@@ -491,11 +524,35 @@ class Trainer(object):
                         # ax.legend()
                         ax.plot(np.arange(obs_from_act_long.shape[0]), y_f.cpu().squeeze()[node]*torch.ones(obs_from_act_long.shape[0]), label=f'target_node_{node}', linestyle='--', color=colormaps[node])
                     # 绘制绿色区块，横轴范围为[0,obs_from_act.shape[0]]，纵轴范围为全部，透明度为0.3
-                    plt.axvspan(0, obs_from_act.shape[0], color='green', alpha=0.2)
+                    plt.axvspan(pre_time-1, pre_time+obs_from_act.shape[0]-1, color='green', alpha=0.2)
+                    plt.title(f"target loss:{mse_loss(obs_from_act[-1],y_f.squeeze().cpu()).item()}, energy:{torch.norm(actions, p=2)}")
                     # pdb.set_trace()
-                    fig.savefig('test.png')
+                    fig.savefig(f'./images/{self.writer.logdir.split("/")[-1]}kuramoto_step{self.step}.png')
                     #close figure
+                    plt.clf()
                     plt.close(fig)
+                    
+                    fig, ax = plt.subplots()
+                    # 用一个区别明显的colormap
+                    colormaps  = plt.get_cmap('tab10').colors[:obs_from_act_long_max.shape[1]]
+                    
+                    mses_long_max = [mse_loss(obs_long ,y_f.squeeze().cpu()).item() for obs_long in obs_from_act_long_max]
+                    position = next((i for i, val in enumerate(mses_long_max) if val < 1e-4), None)
+                    for node in range(obs_from_act_long.shape[1]):
+                        ax.plot(np.arange(obs_from_act_long_max.shape[0]), obs_from_act_long_max[:, node], label=f'node_{node}', color=colormaps[node])
+                        # ax.legend()
+                        ax.plot(np.arange(obs_from_act_long_max.shape[0]), y_f.cpu().squeeze()[node]*torch.ones(obs_from_act_long_max.shape[0]), label=f'target_node_{node}', linestyle='--', color=colormaps[node])
+                    if position is not None:
+                        ax.axvline(x=position, color='r', linestyle='dotted')
+                        ax.text(position + 0.1, 0, f'x={position}', color='r', fontsize=12)
+                    plt.axvspan(0, obs_from_act.shape[0]-1, color='green', alpha=0.2)
+                    plt.title(f"target loss:{mse_loss(obs_from_act[-1],y_f.squeeze().cpu()).item()}, energy:{torch.norm(actions, p=2)}")
+                        # pdb.set_trace()
+                    fig.savefig(f'./images/{self.writer.logdir.split("/")[-1]}kuramoto_step{self.step}_long.png')
+                        #close figure
+                    plt.clf()
+                    plt.close(fig)
+                    
                     # pdb.set_trace()
                     
                 assert obs_from_act.shape == observations[1:].shape
@@ -550,7 +607,7 @@ class Trainer(object):
                 energy_u_total += energy_u
                 energy_u_data_total += energy_u_data
                 energy_u_data_appr_total += energy_u_data_appr
-                energy_actions_total += energy_actions
+                energy_actions_total += [energy_actions]
                 
                 traj_sampled = obs_from_act
                 traj_model_based = self.env.from_actions_to_obs_direct(u_min)
@@ -623,6 +680,8 @@ class Trainer(object):
         mses /= sample_num
         dis_to_end /= sample_num
         dis_to_end_from_act /= sample_num
+        
+        energy_actions_total, energy_actions_std = np.mean(np.array(energy_actions_total)), np.std(np.array(energy_actions_total))
         print("==================Average======================")
         print("Average MSE between obs produced from sampled actions and sampled obs: ", mse_total)
         print("Average MSE between final obs produced from sampled actions and sampled obs: ", mse_final_total)
@@ -643,6 +702,7 @@ class Trainer(object):
         self.writer.add_scalar('val/obs', mse_total, self.step)
         self.writer.add_scalar('val/final_obs', mse_final_total, self.step)
         self.writer.add_scalar('val/energy', energy_actions_total, self.step)
+        self.writer.add_scalar('val/energy_std', energy_actions_std, self.step)
         self.writer.add_scalar('val/energy_dd', energy_u_data_total, self.step)
         
         self.writer.add_scalar('val/mmd1', mmd1, self.step)
@@ -1177,72 +1237,98 @@ class Trainer(object):
         self.ema_model.train()
         return mse_total, mse_final_total, mse_final_target_total, mse_u_total, mse_u_target_total
     
-    def sample_tensors(self, args, test_data=None, sample_num=10, fn_choose={'energy':1}):
+    def sample_tensors(self, args, test_data=None, sample_num=10, fn_choose={'energy':1}, use_invdyn=False):
         self.model.eval()
         self.ema_model.eval()
         U_s = []
         Y_s = []
         num = 0
-        while num<sample_num:
-            if test_data:
-                random_int = np.random.randint(0, len(test_data))
-            with torch.no_grad():
-                if test_data==None:
-                    if not self.kuramoto:
-                        y_f = np.random.randn(1, 1, self.env.num_observation) * self.sigma
-                        y_0 = np.zeros((1, 1, self.env.num_observation))
-                    else:
-                        n = self.env.num_observation
-                        theta1 = np.mod(0 * np.pi * np.arange(n) / n, 2 * np.pi)
-                        theta2 = np.mod(4 * np.pi * np.arange(n) / n, 2 * np.pi)
-                        y_f = theta2[np.newaxis, np.newaxis, :]
-                        y_0 = theta1[np.newaxis, np.newaxis, :]
+            # if test_data:
+            #     random_int = np.random.randint(0, len(test_data))
+            # with torch.no_grad():
+            #     if test_data==None:
+            #         if not self.kuramoto:
+            #             y_f = np.random.randn(1, 1, self.env.num_observation) * self.sigma
+            #             y_0 = np.zeros((1, 1, self.env.num_observation))
+            #         else:
+            #             n = self.env.num_observation
+            #             theta1 = np.mod(0 * np.pi * np.arange(n) / n, 2 * np.pi)
+            #             theta2 = np.mod(4 * np.pi * np.arange(n) / n, 2 * np.pi)
+            #             y_f = theta2[np.newaxis, np.newaxis, :]
+            #             y_0 = theta1[np.newaxis, np.newaxis, :]
                         
-                    y_0 = self.dataset.normalizer['Y'].normalize(y_0).to(self.device)
-                    y_f = self.dataset.normalizer['Y'].normalize(y_f).to(self.device)
-                    # y_0 = torch.tensor(y_0).to(self.device)
-                    # y_f = torch.tensor(y_f).to(self.device)
-                else:
-                    y_f = test_data[random_int][0][-1, -self.env.num_observation:].unsqueeze(0).unsqueeze(0).to(self.device) # 1, 1, p
-                    y_0 = test_data[random_int][0][0, -self.env.num_observation:].unsqueeze(0).unsqueeze(0).to(self.device) # 1, 1, p
-                  
-            
-                # planning or one-shot
-                if self.apply_guidance:
-                    try:
-                        guide = LossFunction_noparams(horizon=self.env.max_T+1, transition_dim=self.ema_model.transition_dim, observation_dim=self.ema_model.observation_dim, fn_choose=fn_choose, end_vector=y_f.squeeze())
-                        self.ema_model.set_guide_fn(guide)
-                    except:
-                        pass
-                trajectories, _, _, guidances = self.ema_model(batch_size=4, cond={0: y_0, self.env.max_T: y_f}, horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
-                trajectories = trajectories[0:1]
-                
+            #         y_0 = self.dataset.normalizer['Y'].normalize(y_0).to(self.device)
+            #         y_f = self.dataset.normalizer['Y'].normalize(y_f).to(self.device)
+            #         # y_0 = torch.tensor(y_0).to(self.device)
+            #         # y_f = torch.tensor(y_f).to(self.device)
+            #     else:
+        assert test_data
+        datal = cycle(torch.utils.data.DataLoader(
+            test_data, batch_size=sample_num, num_workers=1, shuffle=True, pin_memory=True
+        ))
+        batch = next(datal)
+        batch = batch_to_device(batch, device=self.device)
+        # traj = batch.trajectories
+        cond = batch.conditions
+        for key,values in cond.items():
+            cond[key] = values.unsqueeze(1)
+        # denoiser_cond = batch.denoiser_conditions
+        batch_size =  sample_num         
+    
+        # planning or one-shot
+        if self.apply_guidance:
+            try:
+                guide = LossFunction_noparams(horizon=self.env.max_T+1, transition_dim=self.ema_model.transition_dim, observation_dim=self.ema_model.observation_dim, fn_choose=fn_choose, end_vector=y_f.squeeze())
+                self.ema_model.set_guide_fn(guide)
+            except:
+                pass
+            if isinstance(self.dataset, TrainData_norm_free):
+                trajectories, _, _, guidances = self.ema_model(batch_size=batch_size, cond = cond,denoiser_cond=torch.ones(batch_size,self.ema_model.model.denoiser_cond_dim).to(self.device),horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
+            else:  
+                trajectories, _, _, guidances = self.ema_model(batch_size=batch_size, cond = cond, denoiser_cond=torch.ones(batch_size,self.ema_model.model.denoiser_cond_dim).to(self.device),horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
+            # trajectories = trajectories[0:1]
+    
 
 
-                trajectories = trajectories.cpu()
+        # trajectories = trajectories.cpu()
+        
+        if not use_invdyn:
+            actions = trajectories[:, :-1, :self.ema_model.action_dim] # T, m
+            # action = actions[0, 0]
+            # observations = trajectories[0, 1:, self.ema_model.action_dim:] #  T, p
+            observations = trajectories[:, :, self.ema_model.action_dim:] # T+1, p
+        else:
+            # observations = trajectories[0, 1:]
+            observations = trajectories
+            actions = []
+            for i in range(self.env.max_T):
+                obs_comb = torch.cat([trajectories[:, i, :], trajectories[:, i+1, :]], dim=-1)
+                # obs_comb = obs_comb.reshape(-1, 2*self.ema_model.observation_dim)
+                action = self.ema_model.inv_model(obs_comb)
+                actions.append(action)
+            actions = torch.stack(actions)
+            actions_with_end = torch.cat([actions, torch.zeros((1, *actions.shape[1:])).to(actions.device)], dim=0)
+            actions = actions.transpose(1,0) 
+            actions_with_end = actions_with_end.transpose(1,0)
+            trajectories = torch.cat([actions_with_end, trajectories], dim=-1)
+        actions = actions.cpu()
+        observations = observations.cpu()
+        trajectories = trajectories.cpu()
+        if self.normalized:
+            actions = self.dataset.normalizer['U'].unnormalize(actions)
+            observations = self.dataset.normalizer['Y'].unnormalize(observations)
+            # if test_data:
+            #     y_f = test_data.normalizer['Y'].unnormalize(y_f.cpu()).squeeze(0).squeeze(0)
+            #     y_0 = test_data.normalizer['Y'].unnormalize(y_0.cpu()).squeeze(0).squeeze(0)
+            # else:
+            #     y_f = self.dataset.normalizer['Y'].unnormalize(y_f.cpu()).squeeze(0).squeeze(0)
+            #     y_0 = self.dataset.normalizer['Y'].unnormalize(y_0.cpu()).squeeze(0).squeeze(0)
                 
-                actions = trajectories[0, :-1, :self.ema_model.action_dim] # T, m
-                # action = actions[0, 0]
-                observations = trajectories[0, 1:, self.ema_model.action_dim:] #  T, p
-                if self.normalized:
-                    actions = self.dataset.normalizer['U'].unnormalize(actions)
-                    observations = self.dataset.normalizer['Y'].unnormalize(observations)
-                    if test_data:
-                        y_f = test_data.normalizer['Y'].unnormalize(y_f.cpu()).squeeze(0).squeeze(0)
-                        y_0 = test_data.normalizer['Y'].unnormalize(y_0.cpu()).squeeze(0).squeeze(0)
-                    else:
-                        y_f = self.dataset.normalizer['Y'].unnormalize(y_f.cpu()).squeeze(0).squeeze(0)
-                        y_0 = self.dataset.normalizer['Y'].unnormalize(y_0.cpu()).squeeze(0).squeeze(0)
-                
-                obs_from_act = self.env.from_actions_to_obs_direct(actions, start=y_0)
+            #     obs_from_act = self.env.from_actions_to_obs_direct(actions, start=y_0)
                 # if mse_loss(obs_from_act[-1].squeeze(),y_f.squeeze()) >0.5:
                 #     continue
-
-                U_s.append(actions)
-                Y_s.append(observations)
-                num+=1
-        print(len(U_s))        
-        U_s = torch.stack(U_s)
-        Y_s = torch.stack(Y_s)
+        U_s=actions
+        Y_s=observations
+        print(U_s.shape,Y_s.shape)
         
         return U_s, Y_s[:,:-1], Y_s[:,-1]

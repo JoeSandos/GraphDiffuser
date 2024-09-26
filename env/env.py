@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import networkx as nx
-
+from data.generate_power import swing
 class EnvBase:
     def __init__(self):
         pass
@@ -279,6 +279,92 @@ class Kuramoto(EnvBase):
             for neighbor in range(self.num_nodes):
                 next_phase[node] += self.h * self.A[node, neighbor] * torch.sin(self.current_phase[neighbor] - self.current_phase[node])
         self.current_phase = next_phase
+        return torch.matmul(self.C, self.current_phase), self.current_phase, terminal
+    
+    def get_state(self):
+        return self.current_phase
+    
+    def from_actions_to_obs(self, actions, start=None):
+        assert len(actions) == self.max_T, f"Invalid actions, {len(actions)},{self.max_T}"
+        if start is not None:
+            self.reset(start)
+        else:
+            self.reset()
+        observations = []
+        for a in actions:
+            obs, _, _ = self.step(a)
+            observations.append(obs)
+        return torch.stack(observations).to(self.device)
+    
+    def from_actions_to_obs_longer(self, actions, start=None, continues=2):
+        assert len(actions) == self.max_T, "Invalid actions"
+        if start is not None:
+            self.reset(start)
+        else:
+            self.reset()
+        observations = []
+        for a in actions:
+            obs, _, _ = self.step(a)
+            observations.append(obs)
+        for i in range(continues*self.max_T):
+            obs, _, _ = self.step(torch.zeros(self.num_driver))
+            observations.append(obs)
+        return torch.stack(observations).to(self.device)
+    
+    def from_actions_to_obs_direct(self, actions, start=None):
+        return self.from_actions_to_obs(actions, start)
+    
+    def calculate_model_based_control(self, y_f):
+        # Minimum-energy model-based control
+        # print("Not implemented")
+        return torch.zeros(self.max_T, self.num_driver), torch.zeros(self.num_nodes)
+    
+    def calculate_data_driven_control(self, y_f):
+        # print("Not implemented")
+        return torch.zeros(self.max_T, self.num_driver), torch.zeros(self.num_nodes), torch.zeros(self.max_T, self.num_driver), torch.zeros(self.num_nodes)
+    
+    def calculate_C_0(self):
+        # print("Not implemented")
+        pass
+        
+class Power(EnvBase):
+    def __init__(self, C,m,n, T, device='cpu'):
+        super().__init__()
+        if type(C)==np.ndarray or type(C)==np.matrix:
+            self.C = torch.tensor(C, dtype=torch.float32).to(device)
+        else:
+            self.C = C.to(device)
+        self.num_nodes = n
+        self.num_driver = m
+        self.num_observation = n
+        self.max_T = T #action len
+        self.device = device
+        self.delta_t = 0.01
+        self.reset()
+    
+    def reset(self, start=None):
+        theta1 = np.zeros(self.num_nodes) # initial phase
+        # theta2 = np.mod(4 * np.pi * np.arange(self.num_nodes) / self.num_nodes, 2 * np.pi) # final phase
+        self.omega = torch.zeros(self.num_nodes).to(self.device)
+        if start is None:
+            self.current_phase = torch.tensor(theta1, dtype=torch.float32).to(self.device)
+        else:
+            self.current_phase = start
+        self.T = 0
+        return self.current_phase, self.current_phase, self.T
+    
+    def step(self, u):
+        terminal = False
+
+        if self.T == self.max_T*self.delta_t:
+            terminal = True
+        assert len(u) == self.num_driver, f"Invalid input, {len(u)},{self.num_driver}"
+        
+        out=swing(self.T, self.delta_t, self.current_phase.cpu().numpy(), u.cpu().numpy())
+        self.T += self.delta_t
+        if not isinstance(out,torch.Tensor):
+            out = torch.tensor(out, dtype=torch.float32).to(u.device)
+        self.current_phase = out
         return torch.matmul(self.C, self.current_phase), self.current_phase, terminal
     
     def get_state(self):

@@ -13,6 +13,7 @@ from .helpers import (
     PreNorm,
     LinearAttention,
 )
+import math
 
 
 class ResidualTemporalBlock(nn.Module):
@@ -1019,17 +1020,25 @@ class EndTemporalUnetFreeSecond(nn.Module):
         transition_dim,
         # action_dim,
         cond_dim,
+        denoiser_cond_dim,
         dim=32,
         dim_mults=(1, 2, 4, 8),
         attention=False,
+        use_posenc=False,
+        use_cond = True
     ):
         super().__init__()
         # self.action_dim = action_dim
         dims = [transition_dim, *map(lambda m: dim * m, dim_mults)]
         in_out = list(zip(dims[:-1], dims[1:]))
         print(f'[ models/temporal ] Channel dimensions: {in_out}')
-
-        time_dim = 2*dim
+        
+        self.use_cond = use_cond
+        
+        if self.use_cond:
+            time_dim = 2*dim
+        else:
+            time_dim = dim
         self.time_mlp = nn.Sequential(
             SinusoidalPosEmb(dim),
             nn.Linear(dim, dim * 4),
@@ -1037,7 +1046,7 @@ class EndTemporalUnetFreeSecond(nn.Module):
             nn.Linear(dim * 4, dim),
         )
         self.returns_mlp = nn.Sequential(
-                        nn.Linear(1, dim),
+                        nn.Linear(denoiser_cond_dim, dim),
                         nn.Mish(),
                         nn.Linear(dim, dim * 4),
                         nn.Mish(),
@@ -1047,6 +1056,7 @@ class EndTemporalUnetFreeSecond(nn.Module):
         self.ups = nn.ModuleList([])
         num_resolutions = len(in_out)
         self.cond_dim = cond_dim
+        self.denoiser_cond_dim = denoiser_cond_dim
         print(in_out)
         for ind, (dim_in, dim_out) in enumerate(in_out):
             is_last = ind >= (num_resolutions - 1)
@@ -1124,6 +1134,12 @@ class EndTemporalUnetFreeSecond(nn.Module):
             nn.Conv1d(dim, transition_dim*cond_dim*cond_dim, 1),
         )
         
+        
+        if use_posenc:
+            self.posenc = PositionalEncoding(d_model=transition_dim)
+        self.use_posenc = use_posenc
+        
+        
         self.mask_dist = torch.distributions.Bernoulli(probs=1-0.25)
         
         # self.inv_dyn = ARInvModel(hidden_dim=dim, observation_dim=transition_dim-action_dim, action_dim=action_dim, time_dim=time_dim)
@@ -1136,17 +1152,24 @@ class EndTemporalUnetFreeSecond(nn.Module):
 
         # actions = x_in[..., :self.action_dim]
         x = x_in # unet input actions and states together
+        
+        if self.use_posenc:
+            x = self.posenc(x)
         x = einops.rearrange(x, 'b h tr -> b tr h')
 
         t = self.time_mlp(time)
         h = []
-        return_emb = self.returns_mlp(denoiser_cond.unsqueeze(-1))
+        if len(denoiser_cond.shape) == 1:
+            denoiser_cond = denoiser_cond.unsqueeze(-1)
+        return_emb = self.returns_mlp(denoiser_cond)
         if use_dropout:
             mask = self.mask_dist.sample(sample_shape=(return_emb.size(0), 1)).to(return_emb.device)
             return_emb = mask*return_emb
         if force_dropout:
             return_emb = 0*return_emb
-        t = torch.cat([t, return_emb], dim=-1)
+            
+        if self.use_cond:
+            t = torch.cat([t, return_emb], dim=-1)
         
         cond_emb = self.cond_linear(cond.view(cond.shape[0],-1))
         
@@ -1715,3 +1738,23 @@ class LossFunction_noparams(nn.Module):
         # reward = torch.exp(-energy.sum(dim=-1, keepdim=True)/self.horizon/self.action_dim)
         # the range of reward is [0,1], the larger the energy, the smaller the reward
         return energy
+    
+
+class PositionalEncoding(nn.Module):
+    def __init__(
+        self, 
+        d_model, 
+        # dropout = 0., 
+        max_len = 32
+    ):
+        super().__init__()
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(1, max_len, d_model)
+        pe[0, :, 0::2] = torch.sin(position * div_term)
+        pe[0, :, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe, persistent=False)
+
+    def forward(self, x):
+        x = x + self.pe[:, :x.size(1)]
+        return x
