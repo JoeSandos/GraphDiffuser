@@ -1,4 +1,5 @@
-/data/
+/data/__pycache__/
+data/synthetic_data/
 /no_train_cond/
 /runs/
 /results/
