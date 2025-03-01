@@ -1,6 +1,6 @@
 # Introduction
 
-Implementation of the work "A Diffusion-based Generative Approach for Model-free Finite-time Control of Complex Systems"
+Implementation of the work "Sample-efficient diffusion-based control of complex nonlinear systems"
 
 # Installation
 
