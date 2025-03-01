@@ -1,10 +1,26 @@
-/data/
+/data/__pycache__/
+data/synthetic_data/
 /no_train_cond/
 /runs/
 /results/
-script.py
+/figures/
+/images/
+/logs/
+/new/
+/baselines/
+# script.py
+# script2.py
+*script*.py
+script2.py
+toy_guide_*.py
 __pycache__/
 
 .vscode/launch.json
 # png
 *.png
+try.py
+*.pkl
+*.ipynb
+*.zip
+toy_noguide.py
+requirements1.txt

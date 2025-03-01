@@ -1,0 +1,44 @@
+# config.yaml
+experiment_settings:
+  num_data_total: 100000
+  sw_dir: './runs/burgers/'
+  exp_name: 'burgers_split_20000'
+
+parameters: # using list for hyperparameter search
+  data_name:
+    - 'burgers_20000_10_128_1740660485_split'
+  
+  # use_lambda: [1]
+  use_end_second: [1]
+  # free_guide: [1]
+  scale: [0.005, 0.05]
+  lr: [1.0e-3, 1.0e-4]
+  n_train_steps: [16000]
+  concat_ratio: [1]
+  loops: [3]
+  train_inv_first: [1]
+  seed: [0]
+  # train_ratio: [0.2]  # <= 0.2
+
+# Optional configurations that can be uncommented and modified as needed
+# additional_parameters:
+#   pred_eps: [0]
+#   no_cond: [1]
+#   normalized: [1]
+#   use_invdyn: [0, 1]
+#   sigma: [5]
+#   mixup: [0]
+#   use_attn: [0]
+#   has_invdyn: [1]
+#   use_end: [0]
+#   use_cond: [0, 1]
+#   n_timesteps: [64, 128]
+#   valid_ratio: [0.02]
+#   test_ratio: [0.05]
+#   use_clustering: [0]
+#   use_posenc: [1]
+#   sample_use_test: [1]
+#   train_conditioning: [0]
+#   guide_clean: [1]
+#   concat: [0]
+#   regen: [1]

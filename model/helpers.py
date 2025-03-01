@@ -141,7 +141,7 @@ def cosine_beta_schedule(timesteps, s=0.008, dtype=torch.float32):
 
 def apply_conditioning(x, conditions, action_dim):
     for t, val in conditions.items():
-        x[:, t, action_dim:] = val.clone()
+        x[:, t:t+1, action_dim:] = val.clone()
     return x
 
 
@@ -153,7 +153,7 @@ class WeightedLoss(nn.Module):
 
     def __init__(self, weights, action_dim):
         super().__init__()
-        self.register_buffer('weights', weights)
+        self.weights = weights
         self.action_dim = action_dim
 
     def forward(self, pred, targ):
@@ -161,13 +161,19 @@ class WeightedLoss(nn.Module):
             pred, targ : tensor
                 [ batch_size x horizon x transition_dim ]
         '''
+        self.weights = self.weights.to(pred.device)
         loss = self._loss(pred, targ)
+        shape = loss.shape
+        self.weights = self.weights[..., :shape[-1]]
         weighted_loss = (loss * self.weights).mean()
         if self.action_dim == 0:
             a0_loss = 0
+            actions_loss = 0
         else:
-            a0_loss = (loss[:, 0, :self.action_dim] / self.weights[0, :self.action_dim]).mean()
-        return weighted_loss, {'a0_loss': a0_loss}
+            a0_loss = (loss[:, 0, :self.action_dim] ).mean()
+            actions_loss = (loss[:, :, :self.action_dim]).mean()
+        states_loss = (loss[:, :, self.action_dim:]).mean()
+        return weighted_loss, {'a0_loss': a0_loss, 'actions_loss': actions_loss, 'states_loss': states_loss}
 
 class ValueLoss(nn.Module):
     def __init__(self, *args):
