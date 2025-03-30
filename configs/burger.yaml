@@ -2,23 +2,24 @@
 experiment_settings:
   num_data_total: 100000
   sw_dir: './runs/burgers/'
-  exp_name: 'burgers_split_20000'
+  exp_name: 'burgers'
 
 parameters: # using list for hyperparameter search
   data_name:
-    - 'burgers_20000_10_128_1740660485_split'
+    - 'burgers_10000_11_128_1743324036'
   
   # use_lambda: [1]
   use_end_second: [1]
   # free_guide: [1]
   scale: [0.005, 0.05]
   lr: [1.0e-3, 1.0e-4]
-  n_train_steps: [16000]
+  n_train_steps: [100]
   concat_ratio: [1]
   loops: [3]
   train_inv_first: [1]
   seed: [0]
-  # train_ratio: [0.2]  # <= 0.2
+  n_timesteps: [16]
+  train_ratio: [0.9]  # <= 0.2
 
 # Optional configurations that can be uncommented and modified as needed
 # additional_parameters:

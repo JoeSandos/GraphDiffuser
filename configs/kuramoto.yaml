@@ -1,0 +1,20 @@
+experiment_settings:
+  num_data_total: 100000
+  sw_dir: './runs/train_kuramoto/'
+  exp_name: 'kuramoto'
+
+parameters: # using list for hyperparameter search
+  data_name:
+    - 'kuramoto_8_8_15_100000_2_sigma=2'
+    # - 'kuramoto_8_8_15_100000_2_sigma=0.1'
+  # use_lambda: [1]
+  # use_end_second: [1]
+  # free_guide: [1]
+  scale: [ 0.001]
+  # use_smoothness: []  # options: ['uni_first', 'uni_second', 'first', 'second', None]
+  lr: [5.0e-3]
+  # train_inv_first: [1]
+  n_train_steps: [10000]
+  concat_ratio: [1]
+  loops: [3]
+  resample_num: [1000]
