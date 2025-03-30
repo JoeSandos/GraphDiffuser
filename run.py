@@ -37,9 +37,7 @@ def generate_commands(config):
     print('=================start commands=================')
     for combination in itertools.product(*lists):
         # Calculate specific numbers based on combination
-        resample_num = int(num_data_total * combination[-1])
-        interact_num = int(combination[-1] * num_data_total + 
-                         resample_num * combination[-2] * combination[-3])
+
         
         # Generate command
         command = f'python main.py'
@@ -52,12 +50,10 @@ def generate_commands(config):
         
         # Add experiment name and interaction number
         sw_name += exp_name
-        sw_name += f'_inter{interact_num}'
         
         # Add additional command parameters
         command += (f' --sw_dir {sw_dir} '
                    f'--sw_name {sw_name} '
-                   f'--resample_num {resample_num} '
                    f'--train_savepath ./results/{sw_name}/')
         
         print(command)

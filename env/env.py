@@ -1,9 +1,9 @@
 import numpy as np
 import torch
 import networkx as nx
-from data.generate_power import swing, T_fault_in, T_fault_end
+# from data.generate_power import swing, T_fault_in, T_fault_end
 from data.generate_burgers import burgers_update
-from data.generate_ip import inverted_pendulum as ip
+# from data.generate_ip import inverted_pendulum as ip
 from matplotlib import pyplot as plt
 
 
@@ -659,30 +659,25 @@ class Power(EnvBase):
 #         pass
 
 class Burgers(EnvBase):
-    def __init__(self, C, meta_data, device='cpu'):
+    def __init__(self, C,m,n, T, device='cpu'):
         super().__init__()
         if type(C)==np.ndarray or type(C)==np.matrix:
             self.C = torch.tensor(C, dtype=torch.float32).to(device)
         else:
             self.C = C.to(device)
-        n, m, T, N = meta_data['num_nodes'], meta_data['input_dim'], meta_data['control_horizon'], meta_data['num_samples']
-        nt1 = meta_data['control_horizon'] 
-        dt = meta_data['time interval']
-        nt = meta_data['num time steps']
-        x_range = meta_data['x_range']
         self.num_nodes = n
         self.num_driver = m
         self.num_observation = n
         assert n==m, "Invalid input"
         self.max_T = T #action len
         self.device = device
-        self.dt = dt
+        self.dt = 0.0001
         self.t_sample_interval = 1000
-        self.nt = nt
-        self.nt1 = nt1
+        self.nt = 11000
+        self.nt1 = 11
         self.nx = 128
         self.dx = 1/self.nx
-        self.x_range = x_range
+        self.x_range = (0,1)
         self.reset()
     
     def reset(self, start=None):

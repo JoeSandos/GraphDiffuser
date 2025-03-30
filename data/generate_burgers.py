@@ -321,7 +321,7 @@ def get_sampled_trajectory(
 # The following code is a specific implementation of code used in the main script. The logic is basically the same as load_burgers().
 def load_burgers_data_sampled(
         x_range=(0,1), # Spatial grid domain of the burgers equation
-        nt = 10000, # Number of time steps
+        nt = 11000, # Number of time steps
         nx = 128, # Number of spatial nodes (grid points)
         dt= 0.0001, # Temporal interval
         t_sample_interval=1000, # The interval of time steps to generate a new control signal
@@ -365,39 +365,10 @@ def load_burgers_data_sampled(
         'num_nodes': n, 
         'input_dim': n, 
         'control_horizon': nt1, 
-        'num_samples': N,
-        'time interval': dt,
-        'num time steps': nt,
-        'x_range': x_range,
+        'num_samples': N
     }
-    # data_dict['data'] = {'Y_bar': np.stack(Y_bar_list), 'Y_f': np.stack(Y_f_list), 'U': np.flip(np.stack(U_list), axis=1)}
-    data_dict['data'] = {'Y_bar': np.stack(Y_bar_list), 'Y_f': np.stack(Y_f_list), 'U': np.stack(U_list)}
-    # split the data into train, valid, test
-    U_3d = data_dict['data']['U']
-    Y_bar_3d = data_dict['data']['Y_bar']
-    Y_f_3d = data_dict['data']['Y_f']
-    indices = np.random.choice(U_3d.shape[0], size=int(U_3d.shape[0]*0.002), replace=False)
-    data_dict['train_data'] = {}
-    data_dict['val_data'] = {}
-    data_dict['test_data'] = {}
-    for key,data in [('U', U_3d), ('Y_bar', Y_bar_3d), ('Y_f', Y_f_3d)]:
-        valid_data = data[indices[:int(indices.shape[0]/2)]]
-        test_data = data[indices[int(indices.shape[0]/2):]]
-        train_data = np.delete(data, indices, axis=0)
-        print(train_data.shape, valid_data.shape, test_data.shape)
-        data_dict['train_data'][key] = train_data
-        data_dict['val_data'][key] = valid_data
-        data_dict['test_data'][key] = test_data
-
-    # print statistics
-    for key in ['U', 'Y_bar', 'Y_f']:
-        print(key)
-        print('train:', data_dict['train_data'][key].shape)
-        print('valid:', data_dict['val_data'][key].shape)
-        print('test:', data_dict['test_data'][key].shape)
-
-    del data_dict['data']
-    
+    data_dict['data'] = {'Y_bar': np.stack(Y_bar_list), 'Y_f': np.stack(Y_f_list), 'U': np.flip(np.stack(U_list), axis=1)}
+     
     # # Save the data into a dictionary
     # data_dict = { # d4rl API
     #         'observations': np.stack(Y_bar_list), # (N, nt1, n)
@@ -415,7 +386,6 @@ def load_burgers_data_sampled(
     #             'num samples per trajectory': nt1,
     #         },
     #     }
-    # print("Next observations shape: ", data_dict['next_observations'].shape) # (N, nt1, n)
 
     if save_dir is not None:
         import os
@@ -426,7 +396,7 @@ def load_burgers_data_sampled(
             os.makedirs(save_dir)
             print(f"Created directory {save_dir}")
         timestr = str(int(time.time()))
-        data_name = f'burgers_{N}_{nt1}_{n}_{timestr}_split.pkl'
+        data_name = f'burgers_{N}_{nt1}_{n}_{timestr}.pkl'
         save_path = os.path.join(save_dir, data_name)
         with open(save_path, 'wb') as f:
             pickle.dump(data_dict, f)
@@ -438,7 +408,7 @@ def load_burgers_data_sampled(
 
 
 if __name__ == '__main__':
-    load_burgers_data_sampled(N=20000,save_dir='./synthetic_data')
+    load_burgers_data_sampled(N=10000,save_dir='./data/synthetic_data')
 
 
 # -------------------test----------------------------------------------

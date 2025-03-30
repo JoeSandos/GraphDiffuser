@@ -7,6 +7,7 @@ from model.diffusion import *
 from model.temporal import *
 import copy
 import os
+import pdb
 # set thread number
 def set_cpu_num(cpu_num):
     if cpu_num <= 0: return
@@ -31,17 +32,17 @@ parser = argparse.ArgumentParser()
 
 # 添加参数
 parser.add_argument('--seed', type=int, default=44) # random seed
-# parser.add_argument('--train_ratio', type=float, default=0.2)
-# parser.add_argument('--valid_ratio', type=float, default=0.2)
-# parser.add_argument('--test_ratio', type=float, default=0.2) 
+parser.add_argument('--train_ratio', type=float, default=0.2) # train data ratio
+parser.add_argument('--valid_ratio', type=float, default=0.001) # valid data ratio
+parser.add_argument('--test_ratio', type=float, default=0.0005)  # test data ratio
 parser.add_argument('--batch_size', type=int, default=16) # batch size
 parser.add_argument('--lr', type=float, default=5e-3) # learning rate
 parser.add_argument('--train_savepath', type=str, default='./results/train_save/') # path to save training model
-parser.add_argument('--n_train_steps', type=int, default=int(16000)) # number of training steps
+parser.add_argument('--n_train_steps', type=int, default=int(100)) # number of training steps
 parser.add_argument('--n_steps_per_epoch', type=int, default=int(1e3)) # number of steps per epoch
-parser.add_argument('--sw_dir', type=str, default='./runs/burgers/') # tensorboard log directory
-parser.add_argument('--sw_name', type=str, default='burgers') # tensorboard log name
-parser.add_argument('--data_name', type=str, default='burgers_20000_10_128_1740660485_split') # dataset name
+parser.add_argument('--sw_dir', type=str, default='./runs/kuramoto/') # tensorboard log directory
+parser.add_argument('--sw_name', type=str, default='kuramoto') # tensorboard log name
+parser.add_argument('--data_name', type=str, default='kuramoto_8_8_15_100_2_sigma=2') # dataset name
 parser.add_argument('--normalized', type=int, default=1) # whether to normalize the data, default is True
 parser.add_argument('--pred_eps', type=int, default=0) # whether to predict epsilon, default is False
 parser.add_argument('--sigma', type=float, default=1) # sigma for kuramoto, ignore
@@ -167,7 +168,7 @@ trainer = Trainer(diffusion,
                   guide_clean=args.guide_clean,
                   kuramoto=True,
                   mixup=args.mixup,
-                  args=args,)
+                  )
 
 # write args to tensorboard
 for key, value in vars(args).items():
@@ -195,13 +196,13 @@ for i in range(args.loops):
     with torch.no_grad():
         if 1:
             
-            samples_U, samples_Y_bar, samples_Y_f = trainer.sample_tensors(args=args, sample_num=args.resample_num, test_data=train_data, use_invdyn=args.use_invdyn)
+            samples_U, samples_Y_bar, samples_Y_f = trainer.sample_tensors(args=args, sample_num=args.resample_num, test_data=test_data, use_invdyn=args.use_invdyn)
         else:
             samples_U = []
             samples_Y_bar = []
             samples_Y_f = []
             for s in tqdm(range(args.resample_num)):
-                sample_U, sample_Y_bar, sample_Y_f = trainer.sample_tensors(args=args, sample_num=args.resample_num, test_data=train_data, use_invdyn=args.use_invdyn)
+                sample_U, sample_Y_bar, sample_Y_f = trainer.sample_tensors(args=args, sample_num=args.resample_num, test_data=test_data, use_invdyn=args.use_invdyn)
                 samples_U.append(sample_U)
                 samples_Y_bar.append(sample_Y_bar)
                 samples_Y_f.append(sample_Y_f)

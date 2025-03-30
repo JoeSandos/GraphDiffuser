@@ -15,6 +15,8 @@ from utils.dataset import *
 import matplotlib.pyplot as plt
 from collections import namedtuple
 import pickle
+import yaml
+
 Batch = namedtuple('Batch', 'trajectories conditions')
 Batch2 = namedtuple('Batch2', 'trajectories conditions denoiser_conditions')
 
@@ -75,7 +77,7 @@ class Trainer(object):
         label_freq=2000,
         results_folder='./results',
         n_reference=8,
-        n_samples=8,
+        n_samples=4,
         resample = False,
         use_invdyn = False,
         normalized = False,
@@ -86,7 +88,8 @@ class Trainer(object):
         guide_clean= False,
         kuramoto = False,
         power = False,
-        mixup = False
+        mixup = False,
+        args = None
     ):
         super().__init__()
         self.model = diffusion_model
@@ -136,10 +139,21 @@ class Trainer(object):
 
         self.reset_parameters()
         self.step = 0
+        self.summary_writer_name = summary_writer_name
+
         if summary_writer_name is not None:
             self.writer = SummaryWriter(summary_writer_name)
         else:
             self.writer = SummaryWriter()
+        
+        self.args = args
+        # save args to yaml to summary_writer_name directory
+        self.sample_dir = os.path.join(self.summary_writer_name, 'samples')
+        if not os.path.exists(self.sample_dir):
+            os.makedirs(self.sample_dir)
+        if summary_writer_name is not None:
+            with open(f'{summary_writer_name}/args.yaml', 'w') as file:
+                yaml.dump(args, file)
 
     def renew_dataset(self, dataset):
         self.dataset = dataset
@@ -182,13 +196,14 @@ class Trainer(object):
             # if self.step == 0 and self.sample_freq:
             #     self.sample(self.n_reference,self.resample, test_data, no_cond)
 
-            if self.sample_freq and self.step % self.sample_freq == 0:
+            if self.sample_freq and self.step % (self.sample_freq + int(train_inv)*4000) == 0:
                 if self.apply_guidance:
                     self.sample_guided(self.n_samples,self.resample, test_data, no_cond, use_invdyn=self.use_invdyn)
                 # elif self.use_invdyn:
                 #     self.sample_invdyn(self.n_samples,self.resample, test_data, no_cond)
                 else:
-                    self.sample(self.n_samples,self.resample, test_data, no_cond)
+                    raise
+                    # self.sample(self.n_samples,self.resample, test_data, no_cond)
                 
             # train
             self.model.train()
@@ -218,7 +233,11 @@ class Trainer(object):
                     # mixup_activate += 1
                         
                 # pdb.set_trace()
+                
                 if not train_inv:
+                    # try:
+                    # loss, infos = self.model.diffuse_loss(*batch)
+                    # except:
                     loss, infos = self.model.loss(*batch)
                 else:
                     loss, infos = self.model.inv_loss(*batch)
@@ -317,6 +336,7 @@ class Trainer(object):
         self.ema_model.eval()
         
         mse_total = 0
+        mse_natural_total = 0
         mse_final_total = 0
         mse_final_target_total = 0
         mse_final_target2_total = 0
@@ -338,6 +358,9 @@ class Trainer(object):
         
         traj_tensors = []
         search_cond = False
+        save_sample_dir = os.path.join(self.sample_dir, f'step{self.step}')
+        if not os.path.exists(save_sample_dir):
+            os.makedirs(save_sample_dir)
         for epoch in range(sample_num):
             if test_data:
                 random_int = np.random.randint(0, len(test_data))
@@ -375,14 +398,14 @@ class Trainer(object):
                 # planning or one-shot
                 if not resample:
                     try:
-                        guide = LossFunction_noparams(horizon=self.env.max_T+1, transition_dim=self.ema_model.transition_dim, observation_dim=self.ema_model.observation_dim, fn_choose=fn_choose, end_vector=y_f.squeeze())
+                        guide = LossFunction_noparams(horizon=self.env.max_T+1, action_dim=self.ema_model.action_dim, observation_dim=self.ema_model.observation_dim, fn_choose=fn_choose, end_vector=y_f.squeeze().unsqueeze(0))
                         self.ema_model.set_guide_fn(guide)
                     except:
                         pass
                     if not no_cond:
                         batch_size = 1
                         # if isinstance(self.dataset, TrainData_norm_free):
-                        trajectories, _, _, guidances = self.ema_model(batch_size=batch_size, cond={0: y_0, self.env.max_T: y_f}, denoiser_cond=torch.ones(batch_size,self.ema_model.model.denoiser_cond_dim).to(self.device),horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
+                        (trajectories, _, _, guidances), guidance_losses = self.ema_model(batch_size=batch_size, cond={0: y_0, self.env.max_T: y_f}, denoiser_cond=torch.ones(batch_size,self.ema_model.model.denoiser_cond_dim).to(self.device),horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
                         # else:  
                             # trajectories, _, _, guidances = self.ema_model(batch_size=batch_size, cond={0: y_0, self.env.max_T: y_f}, horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
                         
@@ -394,24 +417,25 @@ class Trainer(object):
                         # trajectories, _, _, guidances = self.ema_model(batch_size=4, cond={0: y_0}, horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
                         # trajectories = trajectories[0:1]
 
+                    action_d = self.ema_model.transition_dim-self.ema_model.observation_dim
 
                     if not use_invdyn:
-                        actions = trajectories[0, :-1, :self.ema_model.action_dim] # T, m
+                        actions = trajectories[0, :-1, :action_d] # T, m
                         # action = actions[0, 0]
-                        # observations = trajectories[0, 1:, self.ema_model.action_dim:] #  T, p
-                        observations = trajectories[0, :, self.ema_model.action_dim:] # T+1, p
+                        # observations = trajectories[0, 1:, action_d:] #  T, p
+                        observations = trajectories[0, :, action_d:] # T+1, p
                     else:
                         # observations = trajectories[0, 1:]
-                        observations = trajectories[0,...,self.ema_model.action_dim:]
+                        observations = trajectories[0,...,action_d:]
                         actions = []
                         for i in range(self.env.max_T):
-                            obs_comb = torch.cat([trajectories[:, i, self.ema_model.action_dim:], trajectories[:, i+1, self.ema_model.action_dim:]], dim=-1)
+                            obs_comb = torch.cat([trajectories[:, i, action_d:], trajectories[:, i+1, action_d:]], dim=-1)
                             # obs_comb = obs_comb.reshape(-1, 2*self.ema_model.observation_dim)
                             action = self.ema_model.inv_model(obs_comb)
                             actions.append(action.squeeze(0))
                         actions = torch.stack(actions)
                         actions_with_end = torch.cat([actions, torch.zeros(1, actions.size(-1)).to(actions.device)], dim=0)
-                        trajectories = torch.cat([actions_with_end.unsqueeze(0), trajectories[..., self.ema_model.action_dim:]], dim=-1)
+                        trajectories = torch.cat([actions_with_end.unsqueeze(0), trajectories[..., action_d:]], dim=-1)
                     actions = actions.cpu()
                     observations = observations.cpu()
                     trajectories = trajectories.cpu()
@@ -512,12 +536,32 @@ class Trainer(object):
                         if epoch<4:
                             # pdb.set_trace()
                             self.writer.add_scalar(f'guidance/{k}_{epoch}', np.nanmean(v.cpu()), self.step)
-                            
-                    
                 
+                x_timesteps = guidance_losses['timesteps']
+                for key, val in guidance_losses.items():
+                    if key != 'timesteps':
+                        y = val
+                        name = f'{key}'
+                        fig, ax = plt.subplots()
+                        # invert x axis
+                        ax.invert_xaxis()
+                        ax.plot(x_timesteps, y)
+                        ax.set(xlabel='timesteps', ylabel='guidance_loss',
+                            title=f'{name}')
+                        
+                        ax.legend()
+                        ax.grid()
+                        self.writer.add_figure(f'val/guidance_loss_{name}', fig, self.step)
+                        plt.close(fig)
+                        
+
+    
                 # evaluate the correspondense of actions and observations
                 self.env.reset()
                 obs_from_act = self.env.from_actions_to_obs_direct(actions, start = y_0)
+                
+                obs_from_natural = self.env.from_actions_to_obs_direct(torch.zeros_like(actions).to(actions.device), start = y_0)
+                
                 obs_from_act_single = []
                 for i in range(self.env.max_T):
                     self.env.reset(observations[i].cpu())
@@ -583,6 +627,7 @@ class Trainer(object):
                         pickle.dump(dict_out, f)
                 assert obs_from_act.shape == observations[1:].shape
                 mse = mse_loss(obs_from_act,observations[1:]).item()
+                mse_natural = mse_loss(obs_from_natural[-1],y_f.squeeze().cpu()).item()
                 # print("MSE between obs produced from sampled actions and sampled obs: ", mse)
                 # assert torch.all(y_f.cpu().squeeze()==observations.cpu().squeeze()), "Error"
                 mse_final = mse_loss(obs_from_act[-1],y_f.squeeze().cpu()).item()
@@ -620,6 +665,7 @@ class Trainer(object):
                 
                 
                 mse_total += mse
+                mse_natural_total += mse_natural
                 mse_final_total += mse_final
                 # mse_final_target_total += mse_final_target
                 # mse_final_target2_total += mse_final_target2
@@ -650,6 +696,16 @@ class Trainer(object):
                         ax.grid()
                         self.writer.add_figure(f'val/obs_dim_{dim}', fig, self.step)
                         plt.close()
+                    
+                    # save sample
+                    name_obs = f'sample{epoch}_mse_final_{mse_final:.8f}_energy_{energy_actions:.8f}_obs.npy'
+                    name_actions = f'sample{epoch}_mse_final_{mse_final:.8f}_energy_{energy_actions:.8f}_actions.npy'
+                    name_sample_obs = f'sample{epoch}_mse_final_{mse_final:.8f}_energy_{energy_actions:.8f}_sample_obs.npy'
+                    # save
+                    np.save(os.path.join(save_sample_dir, name_obs), obs_from_act_draw.cpu().numpy())
+                    np.save(os.path.join(save_sample_dir, name_actions), actions.cpu().numpy())
+                    np.save(os.path.join(save_sample_dir, name_sample_obs), observations.cpu().numpy())
+                    
                 
                 if traj_sampled.shape[-1]>=2:
                     if draw_traj:
@@ -693,6 +749,7 @@ class Trainer(object):
         
         # print(traj_tensors.shape)
         mse_total /= sample_num
+        mse_natural_total /= sample_num
         mse_final_total /= sample_num
         # mse_final_target_total /= sample_num
         # mse_final_target2_total /= sample_num
@@ -725,6 +782,29 @@ class Trainer(object):
         
         print(f"Energies of model-based minumum energy control: {energy_u_total}, data-driven minumum energy control: {energy_u_data_total}, data-driven minumum energy control approximation: {energy_u_data_appr_total}, sampled actions: {energy_actions_total}")
         
+        # save results to sample_dir as yaml
+        dict_out = {'mse_total':mse_total,
+                    'mse_natural_total':mse_natural_total,
+                    'mse_final_total':mse_final_total,
+                    'mse_u_total':mse_u_total,
+                    'mse_u_target_total':mse_u_target_total,
+                    'mse_u_data_total':mse_u_data_total,
+                    'mse_u_data_appr_total':mse_u_data_appr_total,
+                    'mse_u_target_data_total':mse_u_target_data_total,
+                    'mse_u_target_data_appr_total':mse_u_target_data_appr_total,
+                    'energy_u_total':energy_u_total,
+                    'energy_u_data_total':energy_u_data_total,
+                    'energy_u_data_appr_total':energy_u_data_appr_total,
+                    'energy_actions_total':energy_actions_total,
+                    'mmd1':mmd1,
+                    'mmd2':mmd2}
+        for key, val in dict_out.items():
+            if hasattr(val, 'item'):
+                dict_out[key] = val.item()
+        with open(os.path.join(save_sample_dir, f'sample_results.yaml'), 'w') as f:
+            yaml.dump(dict_out, f)
+            
+    
         self.writer.add_scalar('val/obs', mse_total, self.step)
         self.writer.add_scalar('val/final_obs', mse_final_total, self.step)
         self.writer.add_scalar('val/energy', energy_actions_total, self.step)
@@ -1296,20 +1376,26 @@ class Trainer(object):
         batch = batch_to_device(batch, device=self.device)
         # traj = batch.trajectories
         cond = batch.conditions
+        y_f = cond[self.env.max_T]
         for key,values in cond.items():
-            cond[key] = values.unsqueeze(1)
+            if sample_num>values.shape[0]:
+                multi_values = torch.cat([values]*(sample_num//values.shape[0]),dim=0)
+                cond[key] = multi_values[:sample_num].unsqueeze(1)
+            else:
+                cond[key] = values.unsqueeze(1)
         # denoiser_cond = batch.denoiser_conditions
+        pdb.set_trace()
         batch_size =  sample_num         
     
         # planning or one-shot
         if self.apply_guidance:
             try:
-                guide = LossFunction_noparams(horizon=self.env.max_T+1, transition_dim=self.ema_model.transition_dim, observation_dim=self.ema_model.observation_dim, fn_choose=fn_choose, end_vector=y_f.squeeze())
+                guide = LossFunction_noparams(horizon=self.env.max_T+1, action_dim=self.ema_model.action_dim, observation_dim=self.ema_model.observation_dim, fn_choose=fn_choose, end_vector=y_f.squeeze())
                 self.ema_model.set_guide_fn(guide)
             except:
                 pass
             # if isinstance(self.dataset, TrainData_norm_free):
-            trajectories, _, _, guidances = self.ema_model(batch_size=batch_size, cond = cond,denoiser_cond=torch.ones(batch_size,self.ema_model.model.denoiser_cond_dim).to(self.device),horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
+            (trajectories, _, _, guidances), guidance_losses = self.ema_model(batch_size=batch_size, cond = cond,denoiser_cond=torch.ones(batch_size,self.ema_model.model.denoiser_cond_dim).to(self.device),horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
             # else:  
                 # trajectories, _, _, guidances = self.ema_model(batch_size=batch_size, cond = cond, denoiser_cond=torch.ones(batch_size,self.ema_model.model.denoiser_cond_dim).to(self.device),horizon=self.env.max_T+1, apply_guidance=self.apply_guidance, guide_clean=self.guide_clean)
             # trajectories = trajectories[0:1]
@@ -1317,18 +1403,19 @@ class Trainer(object):
 
 
         # trajectories = trajectories.cpu()
+        action_d = self.ema_model.transition_dim - self.ema_model.observation_dim
         
         if not use_invdyn:
-            actions = trajectories[:, :-1, :self.ema_model.action_dim] # T, m
+            actions = trajectories[:, :-1, :action_d] # T, m
             # action = actions[0, 0]
-            # observations = trajectories[0, 1:, self.ema_model.action_dim:] #  T, p
-            observations = trajectories[:, :, self.ema_model.action_dim:] # T+1, p
+            # observations = trajectories[0, 1:, action_d:] #  T, p
+            observations = trajectories[:, :, action_d:] # T+1, p
         else:
             # observations = trajectories[0, 1:]
-            observations = trajectories[...,self.ema_model.action_dim:]
+            observations = trajectories[...,action_d:]
             actions = []
             for i in range(self.env.max_T):
-                obs_comb = torch.cat([trajectories[:, i, self.ema_model.action_dim:], trajectories[:, i+1, self.ema_model.action_dim:]], dim=-1)
+                obs_comb = torch.cat([trajectories[:, i, action_d:], trajectories[:, i+1, action_d:]], dim=-1)
                 # obs_comb = obs_comb.reshape(-1, 2*self.ema_model.observation_dim)
                 action = self.ema_model.inv_model(obs_comb)
                 actions.append(action)
