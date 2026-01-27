@@ -2,8 +2,6 @@
 
 ## Introduction
 
-Thank you for reviewing our **NIPS 2025** manuscript:  "Sample-efficient diffusion-based control of complex nonlinear systems"
-
 This repository contains the implementation of **SEDC**, a novel diffusion-based control framework for complex nonlinear physical systems. 
 
 ![Alt text](asset\results.png)
@@ -28,7 +26,6 @@ python data/generate_[model].py
 
 Currently available `model` are `burgers`, `kuramoto`. 
 
-You can also download the pre-generated data from our link: [Google Drive](https://drive.google.com/drive/folders/12p5M9rf2gDWNsFYFrWfsVK7-UWy6EePa?usp=sharing).
 
 Finally, store the data in the `data\synthetic_data` folder.
 
